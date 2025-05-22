@@ -9,6 +9,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 
+use crossbeam_utils::CachePadded;
+
 #[derive(Debug)]
 pub enum ForkUnionError {
     Alloc(AllocError),
@@ -52,15 +54,14 @@ unsafe fn dummy_trampoline(_ctx: *const (), _task: Task) {
     unreachable!("dummy_trampoline should not be called")
 }
 
-/// Rust doesn't allow over-aligning struct members, so we pack them into `Padded64<T>`
+/// Rust doesn't allow over-aligning struct members, so we pack them into `Padded<T>`
 /// to ensure that high-contention atomics are placed on separate cache lines.
-#[repr(align(64))]
-struct Padded64<T>(UnsafeCell<T>);
+struct Padded<T>(UnsafeCell<CachePadded<T>>);
 
-impl<T> Padded64<T> {
+impl<T> Padded<T> {
     #[inline(always)]
     const fn new(val: T) -> Self {
-        Self(UnsafeCell::new(val))
+        Self(UnsafeCell::new(CachePadded::new(val)))
     }
     #[inline(always)]
     fn get(&self) -> &T {
@@ -73,9 +74,6 @@ impl<T> Padded64<T> {
     }
 }
 
-unsafe impl<T: Send> Send for Padded64<T> {}
-unsafe impl<T: Sync> Sync for Padded64<T> {}
-
 /// The shared state of the thread pool, used by all threads.
 /// It intentionally pads all of independently mutable regions to avoid false sharing.
 /// The `task_trampoline` function receives the `task_context` state pointers and
@@ -87,10 +85,10 @@ struct Inner {
     pub task_trampoline: Trampoline,
     pub task_parts_count: usize,
 
-    pub stop: Padded64<AtomicBool>,
-    pub task_parts_remaining: Padded64<AtomicUsize>,
-    pub task_parts_passed: Padded64<AtomicUsize>,
-    pub task_generation: Padded64<AtomicUsize>,
+    pub stop: Padded<AtomicBool>,
+    pub task_parts_remaining: Padded<AtomicUsize>,
+    pub task_parts_passed: Padded<AtomicUsize>,
+    pub task_generation: Padded<AtomicUsize>,
 }
 
 unsafe impl Sync for Inner {}
@@ -99,15 +97,15 @@ unsafe impl Send for Inner {}
 impl Inner {
     pub fn new(threads: usize) -> Self {
         Self {
-            stop: Padded64::new(AtomicBool::new(false)),
+            stop: Padded::new(AtomicBool::new(false)),
             total_threads: threads,
             task_context: ptr::null(),
             task_trampoline: dummy_trampoline,
             task_parts_count: 0,
 
-            task_parts_remaining: Padded64::new(AtomicUsize::new(0)),
-            task_parts_passed: Padded64::new(AtomicUsize::new(0)),
-            task_generation: Padded64::new(AtomicUsize::new(0)),
+            task_parts_remaining: Padded::new(AtomicUsize::new(0)),
+            task_parts_passed: Padded::new(AtomicUsize::new(0)),
+            task_generation: Padded::new(AtomicUsize::new(0)),
         }
     }
 

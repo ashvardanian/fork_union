@@ -9,3 +9,6 @@ repository = "https://github.com/ashvardanian/fork_union"
 
 [lib]
 path = "fork_union.rs"
+
+[dependencies]
+crossbeam-utils = "0.8.21"
