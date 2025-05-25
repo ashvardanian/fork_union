@@ -1,4 +1,4 @@
-# Fork Union
+# Fork Union 🍴
 
 The __`fork_union`__ library is a thread-pool for "Fork-Join" [SIMT-style](https://en.wikipedia.org/wiki/Single_instruction,_multiple_threads) parallelism for Rust and C++.
 It's quite different from most open-source thread-pool implementations, generally designed around heap-allocated "queues of tasks", synchronized by a "mutex".
@@ -227,7 +227,45 @@ av::fork_union         13136 ns        13136 ns      2117597 bytes/s=467.714M/s
 openmp                 10494 ns        10256 ns      2848849 bytes/s=585.492M/s
 ```
 
-## Testing
+## Safety & Logic
+
+There are only 4 atomic variables in this thread-pool, and some of them are practically optional.
+Let's call every invocation of `for_each_*` a "fork", and every exit from it a "join".
+
+| Variable           | Users Perspective                        | Internal Usage                                  |
+| :----------------- | :--------------------------------------- | :---------------------------------------------- |
+| `stop`             | Stop the entire thread-pool              | Checked by the worker to exit the loop          |
+| `fork_generation`  | How many "forks" have been finished      | Checked by the worker to wake up on new "forks" |
+| `prongs_remaining` | Number of tasks left in this "fork"      | Checked by the main thread to "join" workers    |
+| `prongs_passed`    | Number of tasks completed in this "fork" | Checked in "dynamic" mode to distribute work    |
+
+Why use `prongs_remaining` and `prongs_passed`?
+When greedily stealing tasks from each other, we need to:
+
+1. Poll an incomplete task index.
+2. Execute the task.
+3. Mark the task as completed.
+
+Trivial, but we can't do 3 before we do 2, as otherwise, the calling thread will exit too early, and we will face Undefined Behavior.
+Using two atomic variables our task polling becomes largely independent of the task completion.
+Moreover, we can use `relaxed` memory ordering for `prongs_passed`, as we don't care which thread gets which task.
+
+Why don't we need atomics for `total_threads`?
+The only way to change the number of threads is to `stop_and_reset` the entire thread-pool and then `try_spawn` it again.
+Either of those operations can only be called from one thread at a time and never coincides with any running tasks.
+That's ensured by the `stop`.
+
+Why don't we need atomics for `task_parts` and `task_pointer`?
+A new task can only be submitted from one thread, that updates the number of parts for each new "fork".
+During that update, the workers are asleep, spinning on old values of `fork_generation` and `stop`.
+They only wake up and access the new value once `fork_generation` increments, ensuring safety.
+
+How do we deal with overflows and `SIZE_MAX`-sized tasks?
+The library entirely avoids saturating multiplication and only uses one saturating addition in "release" builds.
+To test the consistency of arithmetic, the C++ template class can be instantiated with a custom `index_type_t`, such as `std::uint8_t` or `std::uint16_t`.
+In the former case, no more than 255 threads can operate and no more than 255 tasks can be addressed, allowing us to easily test every weird corner case of [0:255] threads competing for [0:255] tasks.
+
+## Testing and Benchmarking
 
 To run the C++ tests, use CMake:
 

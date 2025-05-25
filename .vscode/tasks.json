@@ -2,10 +2,28 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build: Debug",
+            "label": "Build: Debug with GDB",
             "command": "cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug && cmake --build build_debug --config Debug",
             "args": [],
             "type": "shell",
+        },
+        {
+            "label": "Build: Debug with LLDB",
+            "command": "cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug && cmake --build build_debug --config Debug",
+            "args": [],
+            "type": "shell",
+            "linux": {
+                "environment": [
+                    {
+                        "name": "CXX",
+                        "value": "clang++-15"
+                    },
+                    {
+                        "name": "CC",
+                        "value": "clang-15"
+                    }
+                ]
+            },
             "osx": {
                 "environment": [
                     {

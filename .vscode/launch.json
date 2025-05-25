@@ -5,10 +5,41 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug",
+            "name": "Debug with GDB",
             "type": "cppdbg",
             "request": "launch",
-            "preLaunchTask": "Build: Debug",
+            "preLaunchTask": "Build: Debug with GDB",
+            "program": "${workspaceFolder}/build_debug/scripts/fork_union_test_cpp20",
+            "cwd": "${workspaceFolder}",
+            "args": [],
+            "setupCommands": [
+                { // Display content in STL containers pretty
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "environment": [
+                {
+                    "name": "ASAN_OPTIONS",
+                    "value": "detect_leaks=0:atexit=1:strict_init_order=1:strict_string_checks=1"
+                }
+            ],
+            "stopAtEntry": false,
+            "linux": {
+                "MIMode": "gdb"
+            },
+            "windows": {
+                "program": "${workspaceFolder}\\build_debug\\scripts\\fork_union_test_cpp20.exe",
+                "MIMode": "gdb",
+                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
+            }
+        },
+        {
+            "name": "Debug with LLDB",
+            "type": "cppdbg",
+            "request": "launch",
+            "preLaunchTask": "Build: Debug with LLDB",
             "program": "${workspaceFolder}/build_debug/scripts/fork_union_test_cpp20",
             "cwd": "${workspaceFolder}",
             "args": [],
@@ -32,11 +63,51 @@
             "osx": {
                 "MIMode": "lldb"
             },
-            "windows": {
-                "program": "${workspaceFolder}\\build_debug\\scripts\\fork_union_test_cpp20.exe",
-                "MIMode": "gdb",
-                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
-            }
+        },
+        {
+            "name": "Debug N-Body with GDB",
+            "type": "cppdbg",
+            "request": "launch",
+            "preLaunchTask": "Build: Debug with GDB",
+            "program": "${workspaceFolder}/build_debug/scripts/fork_union_nbody",
+            "cwd": "${workspaceFolder}",
+            "args": [],
+            "setupCommands": [
+                { // Display content in STL containers pretty
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "environment": [
+                {
+                    "name": "ASAN_OPTIONS",
+                    "value": "detect_leaks=0:atexit=1:strict_init_order=1:strict_string_checks=1"
+                },
+                {
+                    "name": "NBODY_COUNT",
+                    "value": "128"
+                },
+                {
+                    "name": "NBODY_THREADS",
+                    "value": "17"
+                },
+                {
+                    "name": "NBODY_ITERATIONS",
+                    "value": "1000000"
+                },
+                {
+                    "name": "NBODY_BACKEND",
+                    "value": "fork_union_dynamic"
+                },
+            ],
+            "stopAtEntry": false,
+            "linux": {
+                "MIMode": "gdb"
+            },
+            "osx": {
+                "MIMode": "lldb"
+            },
         }
     ]
 }
