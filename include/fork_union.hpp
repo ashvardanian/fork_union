@@ -37,6 +37,24 @@
  *  - `for_n` - for iterating over a range of similar duration tasks, addressable by an index.
  *  - `for_n_dynamic` - for unevenly distributed tasks, where each task may take a different time.
  *  - `for_slices` - for iterating over a range of similar duration tasks, addressable by a slice.
+ *
+ *  Aside from loops, "map-reduce" and "sorting" algorithms are also provided, but they go far beyond
+ *  the capabilities of Parallel STL, to allow users to pass SIMD-capable lambdas, and implement not
+ *  only one level of slicing for parallel operations, but also tree-like aggregations:
+ *
+ *  - `transform_filter_n[_dynamic]` -
+ *  - `transform_filter_reduce_n[_dynamic]` -
+ *  - TODO: `argsort_n[_dynamic]` -
+ *  - TODO: `sort_n[_dynamic]` -
+ *  - TODO: `transform_filter_scan_n[_dynamic]`
+ *
+ *  STL Ranges-like Parallel Algorithms for many iterator types are also provided.
+ *
+ *  @see `for_each`: https://en.cppreference.com/w/cpp/algorithm/for_each.html
+ *  @see `for_each_n`: https://en.cppreference.com/w/cpp/algorithm/for_each_n.html
+ *  @see `transform`: https://en.cppreference.com/w/cpp/algorithm/transform.html
+ *  @see `reduce`: https://en.cppreference.com/w/cpp/algorithm/reduce.html
+ *  @see `sort`: https://en.cppreference.com/w/cpp/algorithm/sort.html
  */
 #pragma once
 #include <memory>  // `std::allocator`
@@ -377,7 +395,7 @@ using thread_pool_t = thread_pool<std::allocator<std::thread>>;
 
 #pragma endregion - Thread Pool
 
-#pragma region - Indexed Tasks
+#pragma region - Parallel Loops
 
 /**
  *  @brief A "prong" - is a tip of a "fork" - describing a "thread" pinning a "task".
@@ -577,17 +595,172 @@ void for_n_dynamic(                                              //
         });
 }
 
-#pragma endregion - Indexed Tasks
+#pragma endregion - Parallel Loops
 
-#if defined(FU_ALLOW_UNSAFE)
-#pragma region - Unsafe Extensions
-template <typename function_type_>
-void unsafe_broadcast(function_type_ const &function) noexcept(false) {
-    std::exception_ptr exception_ptr;
-    std::atomic<thread_index_t> first_exception_thread_index;
+#pragma region - Indexed Algorithms
+
+struct filter_result_t {
+    std::size_t inputs_received = 0;
+    std::size_t outputs_written = 0;
+};
+
+/**
+ *  @brief Map and Filter in parallel, outputting into a pre-allocated buffer.
+ *
+ *  @param[in] n The number of times to call the @p transform.
+ *  @param[in] transform The function, receiving the `prong_t` or the task index as an argument.
+ *  @param[in] filter The function, receiving the @p transform -ed object and returning `true` if it should be included.
+ *  @param[in] outputs The pre-allocated buffer to write the @p filter -ed objects into.
+ *
+ *  This function operates under the following assumptions:
+ *  - The @p transform may be comparatively expensive, as it's at least a memory load.
+ *  - The @p filter is relatively cheap, mostly comparing some cached or in-register values.
+ *  - Writing to shared memory is expensive, especially if the addresses are scattered.
+ *
+ *  Assuming writes are expensive, we want to write data just once, knowing exactly where in @p outputs
+ *  to place it. Assuming reading cached data is orders of magnitude is cheaper than reading globally,
+ *  we want to process the data in small chunks, fitting in L3, knowing how many of them will be exported.
+ *
+ *  @see https://en.cppreference.com/w/cpp/algorithm/transform.html
+ *  @see https://en.cppreference.com/w/cpp/algorithm/replace.html
+ *  @see https://en.cppreference.com/w/cpp/algorithm/replace_copy.html
+ */
+template <                                                  //
+    typename allocator_type_ = std::allocator<std::thread>, //
+    typename index_type_ = std::size_t,                     //
+    std::size_t alignment_ = default_alignment_k,           //
+    typename transform_type_ = dummy_lambda_t,              //
+    typename filter_type_ = dummy_lambda_t,                 //
+    typename outputs_type_ = void                           //
+    >
+filter_result_t transform_filter_n(                              //
+    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
+    std::size_t const n, transform_type_ const &transform,       //
+    filter_type_ const &filter, outputs_type_ &&outputs) noexcept {
+
+    // We need to minimize false-sharing between threads exporting filtered data into
+    // a continuous buffer, or contention on locks/mutexes synchronizing appends to a
+    // dynamic container, like a queue, vector, or a binary search tree.
 }
-#pragma endregion - Unsafe Extensions
-#endif
+
+/**
+ *  @brief Map-Reduce with an optional filter stage, outputting a single object.
+ *
+ *  @param[in] pool The thread pool to use for parallel execution.
+ *  @param[in] n The number of times to call the @p transform.
+ *  @param[in] initial The initial value for the reduction.
+ *  @param[in] transform The function, receiving the `prong_t` or the task index as an argument.
+ *  @param[in] filter The function, receiving the @p transform -ed object and returning `true` if it should be included.
+ *  @param[in] reduce The function, receiving two @p transform -ed objects and returning a reduced object.
+ *
+ *  @see https://en.cppreference.com/w/cpp/algorithm/transform_reduce.html
+ *  @see https://en.cppreference.com/w/cpp/algorithm/reduce.html
+ */
+template <                                                          //
+    typename allocator_type_ = std::allocator<std::thread>,         //
+    typename index_type_ = std::size_t,                             //
+    std::size_t alignment_ = default_alignment_k,                   //
+    typename transform_type_ = dummy_lambda_t,                      //
+    typename filter_type_ = dummy_lambda_t,                         //
+    typename reduce_type_ = dummy_lambda_t,                         //
+    typename result_type_ = int,                                    //
+    typename results_allocator_type_ = std::allocator<result_type_> //
+    >
+result_type_ transform_filter_reduce_n(                                                //
+    thread_pool<allocator_type_, index_type_, alignment_> &pool,                       //
+    std::size_t const n, result_type_ const initial, transform_type_ const &transform, //
+    filter_type_ const &filter, reduce_type_ const &reduce, results_allocator_type_ const &results_allocator) noexcept {
+
+    using result_t = result_type_;
+    using transform_t = transform_type_;
+    using filter_t = filter_type_;
+    using reduce_t = reduce_type_;
+    static_assert(!std::is_void<result_t>::value, "The reduce function must return a value");
+
+    // Infer the callback output types
+    using transformed_t = decltype(transform(prong_t {0, 0}));         // ? The type of the transformed value
+    using reduced_t = decltype(reduce(result_t {}, transformed_t {})); // ? The type of the reduced value
+    static_assert(std::is_nothrow_invocable_r<result_t, transform_t, result_t, transformed_t>::value,
+                  "The reduction combiner must be nothrow invocable with a `result_t` and a `transformed_t` argument");
+
+    // Allocate one temporary object for
+}
+
+template <                                                          //
+    typename allocator_type_ = std::allocator<std::thread>,         //
+    typename index_type_ = std::size_t,                             //
+    std::size_t alignment_ = default_alignment_k,                   //
+    typename transform_type_ = dummy_lambda_t,                      //
+    typename filter_type_ = dummy_lambda_t,                         //
+    typename reduce_type_ = dummy_lambda_t,                         //
+    typename result_type_ = int,                                    //
+    typename results_allocator_type_ = std::allocator<result_type_> //
+    >
+result_type_ transform_filter_reduce_n_dynamic(                                        //
+    thread_pool<allocator_type_, index_type_, alignment_> &pool,                       //
+    std::size_t const n, result_type_ const initial, transform_type_ const &transform, //
+    filter_type_ const &filter, reduce_type_ const &reduce, results_allocator_type_ const &results_allocator) noexcept {
+
+}
+
+#pragma endregion - Indexed Algorithms
+
+#pragma region - Parallel STL
+
+/**
+ *  @brief Simple `std::sort`-like algorithm for parallel sorting of a range of elements, that won't raise exceptions.
+ *  @see https://en.cppreference.com/w/cpp/algorithm/sort.html
+ */
+template <typename iterator_type_>
+void sort(iterator_type_ const begin, iterator_type_ const end) noexcept {
+
+    // For parallel sorting, we can benefit from median-like algorithms, counting the number of elements
+    // in each threads output slice.
+}
+
+/**
+ *  @brief Takes a range of elements [A, B) and [B, C), forming two continuous sorted runs, and merges them in-place.
+ *  @see https://en.cppreference.com/w/cpp/algorithm/inplace_merge.html
+ */
+template <typename iterator_type_>
+void inplace_merge(iterator_type_ const begin, iterator_type_ const end, std::size_t const first_run_length) noexcept {
+    //
+}
+
+/**
+ *
+ *  Unlike the `std::sort`, doesn't have an implicit uncontrolled memory allocation, and won't raise an exception.
+ */
+template <                                                  //
+    typename allocator_type_ = std::allocator<std::thread>, //
+    typename index_type_ = std::size_t,                     //
+    std::size_t alignment_ = default_alignment_k,           //
+    typename iterator_type_ = void                          //
+    >
+void sort(                                                       //
+    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
+    iterator_type_ const begin, iterator_type_ const end) noexcept {
+
+    // For parallel sorting, we can benefit from median-like algorithms, counting the number of elements
+    // in each threads output slice.
+}
+
+template <                                                  //
+    typename allocator_type_ = std::allocator<std::thread>, //
+    typename index_type_ = std::size_t,                     //
+    std::size_t alignment_ = default_alignment_k,           //
+    typename iterator_type_ = void,                         //
+    typename result_type_ = int                             //
+    >
+result_type_ reduce(                                             //
+    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
+    iterator_type_ const begin, iterator_type_ const end, result_type_ const initial) noexcept {
+
+    // For parallel sorting, we can benefit from median-like algorithms, counting the number of elements
+    // in each threads output slice.
+}
+
+#pragma endregion - Parallel STL
 
 } // namespace fork_union
 } // namespace ashvardanian
