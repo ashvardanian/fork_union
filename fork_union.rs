@@ -157,7 +157,7 @@ impl Inner {
 ///
 /// ```no_run
 /// use fork_union as fu;
-/// let pool = fu::spawn(4); // ! Unsafe shortcut, see below
+/// let mut pool = fu::spawn(4); // ! Unsafe shortcut, see below
 /// pool.broadcast(|thread_index| {
 ///     println!("Hello from thread {thread_index}!");
 /// });
@@ -175,8 +175,8 @@ impl Inner {
 /// fn heavy_math(_: usize) {}
 ///
 /// fn main() -> Result<(), Box<dyn Error>> {
-///     let pool = fu::ThreadPool::try_spawn_in(4, Global)?;
-///     fu::for_n_dynamic(&pool, 400, |prong| {
+///     let mut pool = fu::ThreadPool::try_spawn_in(4, Global)?;
+///     fu::for_n_dynamic(&mut pool, 400, |prong| {
 ///         heavy_math(prong.task_index);
 ///     });
 ///     Ok(())
@@ -260,7 +260,7 @@ impl<A: Allocator + Clone> ThreadPool<A> {
     }
 
     /// Executes a function on each thread of the pool.
-    pub fn broadcast<F>(&self, function: F)
+    pub fn broadcast<F>(&mut self, function: F)
     where
         F: Fn(usize) + Sync,
     {
@@ -358,7 +358,7 @@ pub struct Prong {
 }
 
 /// Distributes `n` similar duration calls between threads in slices.
-pub fn for_slices<A, F>(pool: &ThreadPool<A>, n: usize, function: F)
+pub fn for_slices<A, F>(pool: &mut ThreadPool<A>, n: usize, function: F)
 where
     A: Allocator + Clone,
     F: Fn(Prong, usize) + Sync,
@@ -403,7 +403,7 @@ where
 }
 
 /// Distributes `n` similar duration calls between threads by individual indices.
-pub fn for_n<A, F>(pool: &ThreadPool<A>, n: usize, function: F)
+pub fn for_n<A, F>(pool: &mut ThreadPool<A>, n: usize, function: F)
 where
     A: Allocator + Clone,
     F: Fn(Prong) + Sync,
@@ -419,7 +419,7 @@ where
 }
 
 /// Executes `n` uneven tasks on all threads, greedily stealing work.
-pub fn for_n_dynamic<A, F>(pool: &ThreadPool<A>, n: usize, function: F)
+pub fn for_n_dynamic<A, F>(pool: &mut ThreadPool<A>, n: usize, function: F)
 where
     A: Allocator + Clone,
     F: Fn(Prong) + Sync,
@@ -540,9 +540,9 @@ impl<F> SyncConstPtr<F> {
 ///
 /// ```no_run
 /// use fork_union as fu;
-/// let pool = fu::spawn(1);
+/// let mut pool = fu::spawn(1);
 /// let mut data = vec![0u64; 1_000_000];
-/// fu::for_each_prong_mut(&pool, &mut data, |x, prong| {
+/// fu::for_each_prong_mut(&mut pool, &mut data, |x, prong| {
 ///     *x = prong.task_index as u64 * 2;
 /// });
 /// ```
@@ -551,7 +551,7 @@ impl<F> SyncConstPtr<F> {
 /// set of elements in parallel, so this API serves as a shortcut.
 ///
 /// Similar to Rayon's `par_chunks_mut`.
-pub fn for_each_prong_mut<A, T, F>(pool: &ThreadPool<A>, data: &mut [T], function: F)
+pub fn for_each_prong_mut<A, T, F>(pool: &mut ThreadPool<A>, data: &mut [T], function: F)
 where
     A: Allocator + Clone,
     T: Send,
@@ -576,9 +576,9 @@ where
 ///
 /// ```no_run
 /// use fork_union as fu;
-/// let pool = fu::spawn(1);
+/// let mut pool = fu::spawn(1);
 /// let mut strings = vec![String::new(); 1_000];
-/// fu::for_each_prong_mut_dynamic(&pool, &mut strings, |s, prong| {
+/// fu::for_each_prong_mut_dynamic(&mut pool, &mut strings, |s, prong| {
 ///     s.push_str(&format!("hello from thread {}", prong.thread_index));
 /// });
 /// ```
@@ -587,7 +587,7 @@ where
 /// set of elements in parallel, so this API serves as a shortcut.
 ///
 /// Similar to Rayon's `par_iter_mut`.
-pub fn for_each_prong_mut_dynamic<A, T, F>(pool: &ThreadPool<A>, data: &mut [T], function: F)
+pub fn for_each_prong_mut_dynamic<A, T, F>(pool: &mut ThreadPool<A>, data: &mut [T], function: F)
 where
     A: Allocator + Clone,
     T: Send,
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn for_each_thread_dispatch() {
         let count_threads = hw_threads();
-        let pool = spawn(count_threads);
+        let mut pool = spawn(count_threads);
 
         let visited = Arc::new(
             (0..count_threads)
@@ -657,11 +657,11 @@ mod tests {
     #[test]
     fn for_each_static_uncomfortable_input_size() {
         let count_threads = hw_threads();
-        let pool = spawn(count_threads);
+        let mut pool = spawn(count_threads);
 
         for input_size in 0..count_threads {
             let out_of_bounds = AtomicBool::new(false);
-            for_n(&pool, input_size, |prong| {
+            for_n(&mut pool, input_size, |prong| {
                 let task_index = prong.task_index;
                 if task_index >= count_threads {
                     out_of_bounds.store(true, Ordering::Relaxed);
@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn for_each_static_static_scheduling() {
         const EXPECTED_PARTS: usize = 10_000_000;
-        let pool = spawn(hw_threads());
+        let mut pool = spawn(hw_threads());
 
         let visited = Arc::new(
             (0..EXPECTED_PARTS)
@@ -688,7 +688,7 @@ mod tests {
         let visited_ref = Arc::clone(&visited);
         let duplicate_ref = Arc::clone(&duplicate);
 
-        for_n(&pool, EXPECTED_PARTS, move |prong| {
+        for_n(&mut pool, EXPECTED_PARTS, move |prong| {
             let task_index = prong.task_index;
             if visited_ref[task_index].swap(true, Ordering::Relaxed) {
                 duplicate_ref.store(true, Ordering::Relaxed);
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn for_each_dynamic_dynamic_scheduling() {
         const EXPECTED_PARTS: usize = 10_000_000;
-        let pool = spawn(hw_threads());
+        let mut pool = spawn(hw_threads());
 
         let visited = Arc::new(
             (0..EXPECTED_PARTS)
@@ -718,7 +718,7 @@ mod tests {
         let visited_ref = Arc::clone(&visited);
         let duplicate_ref = Arc::clone(&duplicate);
 
-        for_n_dynamic(&pool, EXPECTED_PARTS, move |prong| {
+        for_n_dynamic(&mut pool, EXPECTED_PARTS, move |prong| {
             let task_index = prong.task_index;
             if visited_ref[task_index].swap(true, Ordering::Relaxed) {
                 duplicate_ref.store(true, Ordering::Relaxed);
@@ -739,7 +739,7 @@ mod tests {
         const EXPECTED_PARTS: usize = 10_000_000;
         const OVERSUBSCRIPTION: usize = 7;
         let threads = hw_threads() * OVERSUBSCRIPTION;
-        let pool = spawn(threads);
+        let mut pool = spawn(threads);
 
         let visited = Arc::new(
             (0..EXPECTED_PARTS)
@@ -752,7 +752,7 @@ mod tests {
 
         thread_local! { static LOCAL_WORK: std::cell::Cell<usize> = std::cell::Cell::new(0); }
 
-        for_n_dynamic(&pool, EXPECTED_PARTS, move |prong| {
+        for_n_dynamic(&mut pool, EXPECTED_PARTS, move |prong| {
             let task_index = prong.task_index;
             // Mildly unbalanced CPU burn
             LOCAL_WORK.with(|cell| {
@@ -787,8 +787,8 @@ mod tests {
         }
 
         TASK_COUNTER.store(0, Ordering::Relaxed);
-        let pool = spawn(hw_threads());
-        for_n_dynamic(&pool, EXPECTED_PARTS, |prong| tally(prong.task_index));
+        let mut pool = spawn(hw_threads());
+        for_n_dynamic(&mut pool, EXPECTED_PARTS, |prong| tally(prong.task_index));
 
         assert_eq!(
             TASK_COUNTER.load(Ordering::Relaxed),
@@ -801,7 +801,7 @@ mod tests {
     fn concurrent_histogram_array() {
         const HIST_SIZE: usize = 16;
         const ELEMENTS: usize = 1_000_000;
-        let pool = spawn(hw_threads());
+        let mut pool = spawn(hw_threads());
 
         let values: Vec<usize> = (0..ELEMENTS).map(|i| i % HIST_SIZE).collect();
         let histogram = Arc::new(
@@ -811,7 +811,7 @@ mod tests {
         );
         let hist_ref = Arc::clone(&histogram);
 
-        for_n_dynamic(&pool, ELEMENTS, |prong| {
+        for_n_dynamic(&mut pool, ELEMENTS, |prong| {
             let task_index = prong.task_index;
             let value = values[task_index];
             hist_ref[value].fetch_add(1, Ordering::Relaxed);
@@ -826,7 +826,7 @@ mod tests {
         }
     }
 
-    fn increment_all(pool: &ThreadPool, data: &[AtomicUsize]) {
+    fn increment_all(pool: &mut ThreadPool, data: &[AtomicUsize]) {
         for_n(pool, data.len(), |prong| {
             data[prong.task_index].fetch_add(1, Ordering::Relaxed);
         });
@@ -835,14 +835,14 @@ mod tests {
     #[test]
     fn pass_pool_and_reuse() {
         const ELEMENTS: usize = 128;
-        let pool = spawn(hw_threads());
+        let mut pool = spawn(hw_threads());
 
         let data = (0..ELEMENTS)
             .map(|_| AtomicUsize::new(0))
             .collect::<Vec<_>>();
 
-        increment_all(&pool, &data);
-        increment_all(&pool, &data);
+        increment_all(&mut pool, &data);
+        increment_all(&mut pool, &data);
 
         for counter in data.iter() {
             assert_eq!(counter.load(Ordering::Relaxed), 2);
@@ -854,7 +854,7 @@ mod tests {
         let mut pool = spawn(hw_threads());
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-        for_n(&pool, 1000, |_| {
+        for_n(&mut pool, 1000, |_| {
             COUNTER.fetch_add(1, Ordering::Relaxed);
         });
 
@@ -968,7 +968,7 @@ mod tests {
         );
 
         let large_allocator = CountingAllocator::new(Some(1024 * 1024));
-        let pool = ThreadPool::try_spawn_in(hw_threads(), large_allocator.clone())
+        let mut pool = ThreadPool::try_spawn_in(hw_threads(), large_allocator.clone())
             .expect("We should have enough memory for this!");
 
         let visited = Arc::new(
@@ -980,7 +980,7 @@ mod tests {
         let visited_ref = Arc::clone(&visited);
         let duplicate_ref = Arc::clone(&duplicate);
 
-        for_n_dynamic(&pool, EXPECTED_PARTS, move |prong| {
+        for_n_dynamic(&mut pool, EXPECTED_PARTS, move |prong| {
             let task_index = prong.task_index;
             if visited_ref[task_index].swap(true, Ordering::Relaxed) {
                 duplicate_ref.store(true, Ordering::Relaxed);
