@@ -110,7 +110,7 @@ fn hw_threads() -> usize {
 // ────────────────────────────────────────────────────────────────────────────
 // Fork-Union kernels
 // ────────────────────────────────────────────────────────────────────────────
-fn iteration_fu_static(pool: &fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
+fn iteration_fu_static(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
     let n = bodies.len();
     let bodies_ptr = fu::SyncConstPtr::new(bodies.as_ptr());
 
@@ -129,7 +129,7 @@ fn iteration_fu_static(pool: &fu::ThreadPool, bodies: &mut [Body], forces: &mut 
     });
 }
 
-fn iteration_fu_dynamic(pool: &fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
+fn iteration_fu_dynamic(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
     let n = bodies.len();
     let bodies_ptr = fu::SyncConstPtr::new(bodies.as_ptr());
 
@@ -254,17 +254,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Run the chosen backend
     match backend.as_str() {
         "fork_union_static" => {
-            let pool = fu::ThreadPool::try_spawn(threads)
+            let mut pool = fu::ThreadPool::try_spawn(threads)
                 .unwrap_or_else(|e| panic!("Failed to start Fork-Union pool: {e}"));
             for _ in 0..iters {
-                iteration_fu_static(&pool, &mut bodies, &mut forces);
+                iteration_fu_static(&mut pool, &mut bodies, &mut forces);
             }
         }
         "fork_union_dynamic" => {
-            let pool = fu::ThreadPool::try_spawn(threads)
+            let mut pool = fu::ThreadPool::try_spawn(threads)
                 .unwrap_or_else(|e| panic!("Failed to start Fork-Union pool: {e}"));
             for _ in 0..iters {
-                iteration_fu_dynamic(&pool, &mut bodies, &mut forces);
+                iteration_fu_dynamic(&mut pool, &mut bodies, &mut forces);
             }
         }
         "rayon_static" => {
