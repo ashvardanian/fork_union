@@ -1,5 +1,5 @@
 /**
- *  @brief  OpenMP-style cross-platform fine-grained parallelism library.
+ *  @brief  OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   fork_union.hpp
  *  @author Ash Vardanian
  *  @date   May 2, 2025
@@ -32,6 +32,10 @@
  *  }
  *  @endcode
  *
+ *  On Linux, when libNUMA and libpthread are available, the library can also leverage NUMA-aware memory allocations
+ *  and pin threads to specific physical cores to increase memory locality. It should reduce memory access latency by
+ *  around 35% on average, compared to remote accesses.
+ *
  *  The next layer of logic is for basic index-addressable tasks. It includes basic parallel loops:
  *
  *  - `for_n` - for iterating over a range of similar duration tasks, addressable by an index.
@@ -46,17 +50,30 @@
 #include <cassert> // `assert`
 #include <new>     // `std::hardware_destructive_interference_size`
 
+#define FORK_UNION_VERSION_MAJOR 1
+#define FORK_UNION_VERSION_MINOR 0
+#define FORK_UNION_VERSION_PATCH 2
+
 #if !defined(FU_ALLOW_UNSAFE)
 #define FU_ALLOW_UNSAFE 0
+#endif
+
+#if !defined(FU_ENABLE_NUMA)
+#if defined(__linux__) && defined(__GLIBC__)
+#define FU_ENABLE_NUMA 1
+#else
+#define FU_ENABLE_NUMA 0
+#endif
 #endif
 
 #if FU_ALLOW_UNSAFE
 #include <exception> // `std::exception_ptr`
 #endif
 
-#define FORK_UNION_VERSION_MAJOR 1
-#define FORK_UNION_VERSION_MINOR 0
-#define FORK_UNION_VERSION_PATCH 2
+#if FU_ENABLE_NUMA
+#include <numa.h>    // `numa_available`, `numa_node_of_cpu`, `numa_alloc_onnode`
+#include <pthread.h> // `pthread_getaffinity_np`
+#endif
 
 /**
  *  On C++17 and later we can detect misuse of lambdas that are not properly annotated.
@@ -64,8 +81,13 @@
  */
 #define _FU_DETECT_CPP_20 (__cplusplus >= 202002L)
 #define _FU_DETECT_CPP_17 (__cplusplus >= 201703L)
+
 #if _FU_DETECT_CPP_17
 #include <type_traits> // `std::is_nothrow_invocable_r`
+#endif
+
+#if _FU_DETECT_CPP_20
+#include <concepts> // `std::same_as`, `std::invocable`
 #endif
 
 #if _FU_DETECT_CPP_17
@@ -80,6 +102,12 @@
 #endif
 #endif
 
+#if _FU_DETECT_CPP_20
+#define _FU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define _FU_UNLIKELY(x) (x)
+#endif
+
 namespace ashvardanian {
 namespace fork_union {
 
@@ -87,12 +115,22 @@ namespace fork_union {
  *  @brief Defines variable alignment to avoid false sharing.
  *  @see https://en.cppreference.com/w/cpp/thread/hardware_destructive_interference_size
  *  @see https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html
+ *
+ *  The C++ STL way to do it is to use `std::hardware_destructive_interference_size` if available:
+ *
+ *  @code{.cpp}
+ *  #if defined(__cpp_lib_hardware_interference_size)
+ *  static constexpr std::size_t default_alignment_k = std::hardware_destructive_interference_size;
+ *  #else
+ *  static constexpr std::size_t default_alignment_k = alignof(std::max_align_t);
+ *  #endif
+ *  @endcode
+ *
+ *  That however results into all kinds of ABI warnings with GCC, and suboptimal alignment choice,
+ *  unless you hard-code `--param hardware_destructive_interference_size=64` or disable the warning
+ *  with `-Wno-interference-size`.
  */
-#if defined(__cpp_lib_hardware_interference_size)
-static constexpr std::size_t default_alignment_k = std::hardware_destructive_interference_size;
-#else
-static constexpr std::size_t default_alignment_k = alignof(std::max_align_t);
-#endif
+static constexpr std::size_t default_alignment_k = 128;
 
 /**
  *  @brief Defines saturated addition for a given unsigned integer type.
@@ -107,6 +145,33 @@ inline scalar_type_ add_sat(scalar_type_ a, scalar_type_ b) noexcept {
     return (std::numeric_limits<scalar_type_>::max() - a < b) ? std::numeric_limits<scalar_type_>::max() : a + b;
 #endif
 }
+
+/**
+ *  @brief Defines the in- and exclusivity of the calling thread in for the executing task.
+ *  @sa caller_inclusive_k and caller_exclusive_k
+ *
+ *  This enum affects how the join is performed. If the caller is inclusive, 1/Nth of the call
+ *  will be executed by the calling thread (as opposed to workers) and the join will happen
+ *  inside of the calling scope.
+ */
+enum caller_exclusivity_t {
+    caller_inclusive_k,
+    caller_exclusive_k,
+};
+
+/**
+ *  @brief Defines the mood of the thread-pool, whether it is busy or about to die.
+ *  @sa mood_t::grind_k, mood_t::chill_k, mood_t::die_k
+ */
+enum class mood_t {
+    grind_k = 0, // ? That's our default ;)
+    chill_k,     // ? Sleepy and tired, but just a wake-up call away
+    die_k,       // ? The thread is about to die, we must exit the loop peacefully
+};
+
+struct standard_yield_t {
+    inline void operator()() const noexcept { std::this_thread::yield(); }
+};
 
 #pragma region - Thread Pool
 
@@ -144,17 +209,25 @@ inline scalar_type_ add_sat(scalar_type_ a, scalar_type_ b) noexcept {
  *  int main() {
  *      fu::thread_pool<> pool; // ? Or `fu::thread_pool_t` alias
  *      if (!pool.try_spawn(std::thread::hardware_concurrency())) return EXIT_FAILURE;
- *      pool.broadcast([](std::size_t index) { std::printf("Hello from thread %zu\n", index); });
+ *      pool.broadcast([](std::size_t index) noexcept { std::printf("Hello from thread %zu\n", index); });
  *      return EXIT_SUCCESS;
  *  }
  *  @endcode
  *
- *  @param allocator_type_ The type of the allocator to be used for the thread pool.
- *  @param index_type_ Defaults to `std::size_t`, but can be changed to a smaller type for debugging.
- *  @param alignment_ The alignment of the thread pool. Defaults to `default_alignment_k`.
+ *  Unlike OpenMP, however, separate thread-pools can be created isolating work and resources.
+ *  This is handy when when some logic has to be split between "performance" and "efficiency" cores,
+ *  between different NUMA nodes, between GUI and background tasks, etc.
+ *
+ *
+ *
+ *  @tparam allocator_type_ The type of the allocator to be used for the thread pool.
+ *  @tparam micro_yield_type_ The type of the yield function to be used for busy-waiting.
+ *  @tparam index_type_ Defaults to `std::size_t`, but can be changed to a smaller type for debugging.
+ *  @tparam alignment_ The alignment of the thread pool. Defaults to `default_alignment_k`.
  */
 template <                                                  //
     typename allocator_type_ = std::allocator<std::thread>, //
+    typename micro_yield_type_ = standard_yield_t,          //
     typename index_type_ = std::size_t,                     //
     std::size_t alignment_ = default_alignment_k            //
     >
@@ -162,13 +235,16 @@ class thread_pool {
 
   public:
     using allocator_t = allocator_type_;
+    using micro_yield_t = micro_yield_type_;
+    static_assert(std::is_nothrow_invocable_r<void, micro_yield_t>::value,
+                  "Yield must be callable w/out arguments & return void");
     static constexpr std::size_t alignment_k = alignment_;
     static_assert(alignment_k > 0 && (alignment_k & (alignment_k - 1)) == 0, "Alignment must be a power of 2");
 
     using index_t = index_type_;
     static_assert(std::is_unsigned<index_t>::value, "Index type must be an unsigned integer");
-    using generation_index_t = index_t; // ? A.k.a. number of previous API calls in [0, UINT_MAX)
-    using thread_index_t = index_t;     // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
+    using epoch_index_t = index_t;  // ? A.k.a. number of previous API calls in [0, UINT_MAX)
+    using thread_index_t = index_t; // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
 
     using punned_fork_context_t = void const *;                           // ? Pointer to the on-stack lambda
     using trampoline_t = void (*)(punned_fork_context_t, thread_index_t); // ? Wraps lambda's `operator()`
@@ -178,6 +254,8 @@ class thread_pool {
     allocator_t allocator_ {};
     std::thread *workers_ {nullptr};
     thread_index_t threads_count_ {0};
+    caller_exclusivity_t exclusivity_ {caller_inclusive_k}; // ? Whether the caller thread is included in the count
+    std::size_t sleep_length_micros_ {0}; // ? How long to sleep in microseconds when waiting for tasks
 
     /**
      *  Theoretically, the choice of `std::atomic<bool>` is suboptimal in the presence of `std::atomic_flag`.
@@ -185,13 +263,13 @@ class thread_pool {
      *  have a non-modifying load operation - the `std::atomic_flag::test` was added in C++20.
      *  @see https://en.cppreference.com/w/cpp/atomic/atomic_flag.html
      */
-    alignas(alignment_) std::atomic<bool> stop_ {false};
+    alignas(alignment_) std::atomic<mood_t> mood_ {mood_t::grind_k};
 
     // Task-specific variables:
-    punned_fork_context_t fork_lambda_pointer_ {nullptr}; // ? Pointer to the users lambda
-    trampoline_t fork_trampoline_pointer_ {nullptr};      // ? Calls the lambda
+    punned_fork_context_t fork_state_ {nullptr}; // ? Pointer to the users lambda
+    trampoline_t fork_trampoline_ {nullptr};     // ? Calls the lambda
     alignas(alignment_) std::atomic<thread_index_t> threads_to_sync_ {0};
-    alignas(alignment_) std::atomic<generation_index_t> fork_generation_ {0};
+    alignas(alignment_) std::atomic<epoch_index_t> epoch_ {0};
 
   public:
     thread_pool(thread_pool &&) = delete;
@@ -200,49 +278,61 @@ class thread_pool {
     thread_pool &operator=(thread_pool const &) = delete;
 
     thread_pool(allocator_t const &alloc = {}) noexcept : allocator_(alloc) {}
-    ~thread_pool() noexcept { stop_and_reset(); }
+    ~thread_pool() noexcept { terminate(); }
 
     /**
      *  @brief Returns the number of threads in the thread-pool, including the main thread.
      *  @retval 0 if the thread-pool is not initialized, 1 if only the main thread is used.
-     *  @note This API is not synchronized and is expected to be called only from the main thread.
+     *  @note This API is @b not synchronized.
      */
-    thread_index_t threads() const noexcept { return threads_count_; }
+    thread_index_t threads_count() const noexcept { return threads_count_; }
 
-    /** @brief Estimates the amount of memory managed by this pool handle and internal structures. */
-    std::size_t memory_usage() const noexcept { return sizeof(thread_pool) + threads() * sizeof(std::thread); }
+    /**
+     *  @brief Reports if the current calling thread will be used for broadcasts.
+     *  @note This API is @b not synchronized.
+     */
+    caller_exclusivity_t caller_exclusivity() const noexcept { return exclusivity_; }
+
+    /** @brief Estimates the amount of memory managed by this pool handle and internal structures.
+     *  @note This API is @b not synchronized.
+     */
+    std::size_t memory_usage() const noexcept { return sizeof(thread_pool) + threads_count() * sizeof(std::thread); }
 
     /** @brief Checks if the thread-pool's core synchronization points are lock-free. */
-    bool is_lock_free() const noexcept {
-        return stop_.is_lock_free() && threads_to_sync_.is_lock_free() && fork_generation_.is_lock_free();
-    }
+    bool is_lock_free() const noexcept { return mood_.is_lock_free() && threads_to_sync_.is_lock_free(); }
 
     /**
      *  @brief Creates a thread-pool with the given number of threads.
-     *  @note This is the de-facto @b constructor, and can only be called once.
-     *  @param[in] planned_threads The number of threads to be used. Should be larger than one.
+     *  @param[in] threads The number of threads to be used. Should be larger than one.
+     *  @param[in] exclusivity Should we count the calling thread as one of the threads?
      *  @retval false if the number of threads is zero or the "workers" allocation failed.
      *  @retval true if the thread-pool was created successfully, started, and is ready to use.
+     *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
      */
-    bool try_spawn(thread_index_t const planned_threads) noexcept {
-        if (planned_threads == 0) return false; // ! Can't have zero threads working on something
-        if (threads_count_ != 0) return false;  // ! Already initialized
-        if (planned_threads == 1) {
+    bool try_spawn(thread_index_t const threads, caller_exclusivity_t const exclusivity = caller_inclusive_k) noexcept {
+
+        if (threads == 0) return false;        // ! Can't have zero threads working on something
+        if (threads_count_ != 0) return false; // ! Already initialized
+
+        bool const use_caller_thread = exclusivity == caller_inclusive_k;
+        if (threads == 1 && use_caller_thread) {
             threads_count_ = 1;
             return true; // ! The current thread will always be used
         }
 
         // Allocate the thread pool
-        thread_index_t const worker_threads = planned_threads - 1;
+        thread_index_t const worker_threads = threads - use_caller_thread;
         std::thread *const workers = allocator_.allocate(worker_threads);
         if (!workers) return false; // ! Allocation failed
 
         // Initialize the thread pool can fail for all kinds of reasons,
         // that the `std::thread` documentation describes as "implementation-defined".
         // https://en.cppreference.com/w/cpp/thread/thread/thread
+        exclusivity_ = exclusivity;
         for (thread_index_t i = 0; i < worker_threads; ++i) {
             try {
-                new (&workers[i]) std::thread([this, i] { _worker_loop(i + 1); });
+                thread_index_t const i_with_caller = i + use_caller_thread;
+                new (&workers[i]) std::thread([this, i_with_caller] { _worker_loop(i_with_caller); });
             }
             catch (...) {
                 for (thread_index_t j = 0; j < i; ++j) workers[j].~thread();
@@ -253,27 +343,112 @@ class thread_pool {
 
         // If all went well, we can store the thread-pool and start using it
         workers_ = workers;
-        threads_count_ = planned_threads;
+        threads_count_ = threads;
         return true;
     }
 
     /**
-     *  @brief Stops all threads and deallocates the thread-pool. Must `try_spawn` again to re-use.
-     *  @note Can't be called while any tasks are running.
+     *  @brief A synchronization point that waits for all threads to finish the last broadcasted call.
+     *
+     *  You don't have to explicitly handle the return value and wait on it.
+     *  According to the  C++ standard, the destructor of the `broadcast_join_t` will be called
+     *  in the end of the `broadcast`-calling expression.
      */
-    void stop_and_reset() noexcept {
+    class broadcast_join_t {
+        std::atomic<thread_index_t> &threads_to_sync_;
+
+      public:
+        explicit broadcast_join_t(std::atomic<thread_index_t> &sync) noexcept : threads_to_sync_(sync) {}
+        broadcast_join_t(broadcast_join_t &&) = default;
+        broadcast_join_t(broadcast_join_t const &) = delete;
+        broadcast_join_t &operator=(broadcast_join_t &&) = default;
+        broadcast_join_t &operator=(broadcast_join_t const &) = delete;
+        ~broadcast_join_t() noexcept { wait(); }
+        void wait() const noexcept {
+            micro_yield_t micro_yield;
+            while (threads_to_sync_.load(std::memory_order_acquire)) micro_yield();
+        }
+    };
+
+    /**
+     *  @brief Executes a @p function in parallel on all threads.
+     *  @param[in] function The callback, receiving the thread index as an argument.
+     *  @return A `broadcast_join_t` synchronization point that waits in the destructor.
+     *  @note Even in the `caller_exclusive_k` mode, can be called from just one thread!
+     *  @sa For advanced resource management, consider `unsafe_broadcast` and `unsafe_join`.
+     */
+    template <typename function_type_>
+    broadcast_join_t broadcast(function_type_ const &function) noexcept {
+        unsafe_broadcast(function);
+        return unsafe_join();
+    }
+
+    /**
+     *  @brief Executes a @p function in parallel on all threads, not waiting for the result.
+     *  @param[in] function The callback, receiving the thread index as an argument.
+     *  @sa Use in conjunction with `unsafe_join`.
+     */
+    template <typename function_type_>
+    void unsafe_broadcast(function_type_ const &function) noexcept {
+
+        thread_index_t const threads = threads_count();
+        assert(threads != 0 && "Thread pool not initialized");
+        caller_exclusivity_t const exclusivity = caller_exclusivity();
+        bool const use_caller_thread = exclusivity == caller_inclusive_k;
+        if (threads == 1 && use_caller_thread) return function(static_cast<thread_index_t>(0));
+
+        // Optional check: even in exclusive mode, only one thread can call this function.
+        assert((use_caller_thread || threads_to_sync_.load(std::memory_order_acq_rel) == 0) &&
+               "The broadcast function can be called only from one thread at a time");
+
+#if _FU_DETECT_CPP_17
+        // ? Exception handling and aggregating return values drastically increases code complexity
+        // ? we live to the higher-level algorithms.
+        static_assert(std::is_nothrow_invocable_r<void, function_type_, thread_index_t>::value,
+                      "The callback must be invocable with a `thread_index_t` argument");
+#endif
+
+        // Configure "fork" details
+        fork_state_ = std::addressof(function);
+        fork_trampoline_ = &_call_as_lambda<function_type_>;
+        threads_to_sync_.store(threads - use_caller_thread, std::memory_order_relaxed);
+        epoch_.fetch_add(1, std::memory_order_release); // ? Wake up sleepers
+
+        // Execute on the current "main" thread
+        if (use_caller_thread) function(static_cast<thread_index_t>(0));
+    }
+
+    /** @brief Blocks the calling thread until the currently broadcasted task finishes. */
+    broadcast_join_t unsafe_join() noexcept { return broadcast_join_t(threads_to_sync_); }
+
+    /**
+     *  @brief Stops all threads and deallocates the thread-pool after the last call finishes.
+     *  @note Can be called from @b any thread at any time.
+     *  @note Must `try_spawn` again to re-use the pool.
+     *
+     *  When and how @b NOT to use this function:
+     *  - as a synchronization point between concurrent tasks.
+     *
+     *  When and how to use this function:
+     *  - as a de-facto @b destructor, to stop all threads and deallocate the pool.
+     *  - when you want to @b restart with a different number of threads.
+     */
+    void terminate() noexcept {
         if (threads_count_ == 0) return; // ? Uninitialized
-        if (threads_count_ == 1) {
+
+        caller_exclusivity_t const exclusivity = caller_exclusivity();
+        bool const use_caller_thread = exclusivity == caller_inclusive_k;
+        if (threads_count_ == 1 && use_caller_thread) {
             threads_count_ = 0;
             return; // ? No worker threads to join
         }
         assert(threads_to_sync_.load(std::memory_order_seq_cst) == 0); // ! No tasks must be running
 
         // Stop all threads and wait for them to finish
-        _reset_fork_description();
-        stop_.store(true, std::memory_order_release);
+        _reset_fork();
+        mood_.store(mood_t::die_k, std::memory_order_release);
 
-        thread_index_t const worker_threads = threads_count_ - 1;
+        thread_index_t const worker_threads = threads_count_ - use_caller_thread;
         for (thread_index_t i = 0; i != worker_threads; ++i) {
             workers_[i].join();    // ? Wait for the thread to finish
             workers_[i].~thread(); // ? Call destructor
@@ -285,47 +460,31 @@ class thread_pool {
         // Prepare for future spawns
         threads_count_ = 0;
         workers_ = nullptr;
-        stop_.store(false, std::memory_order_relaxed);
-        fork_generation_.store(0, std::memory_order_relaxed);
+        mood_.store(mood_t::grind_k, std::memory_order_relaxed);
+        epoch_.store(0, std::memory_order_relaxed);
     }
 
     /**
-     *  @brief Executes a function in parallel on the current and all worker threads.
-     *  @param[in] function The callback, receiving the thread index as an argument.
+     *  @brief Transitions "workers" to a sleeping state, waiting for a wake-up call.
+     *  @param[in] wake_up_periodicity_micros How often to check for new work in microseconds.
+     *  @note Can only be called between the tasks for a single thread. No synchronization is performed.
+     *
+     *  This function may be used in some batch-processing operations when we clearly understand
+     *  that the next task won't be arriving for a while and power can be saved without major
+     *  latency penalties.
+     *
+     *  It may also be used in a high-level Python or JavaScript library offloading some parallel
+     *  operations to an underlying C++ engine, where latency is irrelevant.
      */
-    template <typename function_type_>
-    void broadcast(function_type_ const &function) noexcept {
-        thread_index_t const threads_count = threads();
-        assert(threads_count != 0 && "Thread pool not initialized");
-        if (threads_count == 1) return function(static_cast<thread_index_t>(0));
-
-#if _FU_DETECT_CPP_17
-        // ? Exception handling and aggregating return values drastically increases code complexity
-        // ? we live to the higher-level algorithms.
-        static_assert(std::is_nothrow_invocable_r<void, function_type_, thread_index_t>::value,
-                      "The callback must be invocable with a `thread_index_t` argument");
-#endif
-
-        // Configure "fork" details
-        fork_lambda_pointer_ = std::addressof(function);
-        fork_trampoline_pointer_ = &_call_as_lambda<function_type_>;
-        threads_to_sync_.store(threads_count - 1, std::memory_order_relaxed);
-        fork_generation_.fetch_add(1, std::memory_order_release); // ? Wake up sleepers
-
-        // Execute on the current "main" thread
-        function(static_cast<thread_index_t>(0));
-
-        // Wait until all threads are done
-        while (threads_to_sync_.load(std::memory_order_acquire)) std::this_thread::yield();
-
-        // An optional reset of the task variables for debuggability
-        _reset_fork_description();
+    void sleep(std::size_t wake_up_periodicity_micros) noexcept {
+        assert(wake_up_periodicity_micros > 0 && "Sleep length must be positive");
+        sleep_length_micros_ = wake_up_periodicity_micros;
     }
 
   private:
-    void _reset_fork_description() noexcept {
-        fork_lambda_pointer_ = nullptr;
-        fork_trampoline_pointer_ = nullptr;
+    void _reset_fork() noexcept {
+        fork_state_ = nullptr;
+        fork_trampoline_ = nullptr;
     }
 
     /**
@@ -344,26 +503,28 @@ class thread_pool {
      *  @param[in] thread_index The index of the thread that is executing this function.
      */
     void _worker_loop(thread_index_t const thread_index) noexcept {
-        generation_index_t last_fork_generation = 0;
-        assert(thread_index != 0 && "The zero index is for the main thread, not worker!");
+        caller_exclusivity_t const exclusivity = caller_exclusivity();
+        bool const use_caller_thread = exclusivity == caller_inclusive_k;
+        if (use_caller_thread) assert(thread_index != 0 && "The zero index is for the main thread, not worker!");
 
+        epoch_index_t last_epoch = 0;
         while (true) {
             // Wait for either: a new ticket or a stop flag
-            generation_index_t new_fork_generation;
-            bool wants_to_stop;
-            while ((new_fork_generation = fork_generation_.load(std::memory_order_acquire)) == last_fork_generation &&
-                   (wants_to_stop = stop_.load(std::memory_order_acquire)) == false)
-                std::this_thread::yield();
+            epoch_index_t new_epoch;
+            mood_t mood;
+            micro_yield_t micro_yield;
+            while ((new_epoch = epoch_.load(std::memory_order_acquire)) == last_epoch &&
+                   (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
+                micro_yield();
 
-#if _FU_DETECT_CPP_20
-            if (wants_to_stop) [[unlikely]] // Attributes require C++20
-                return;
-#else
-            if (wants_to_stop) return;
-#endif
+            if (_FU_UNLIKELY(mood == mood_t::die_k)) { return; }
+            if (_FU_UNLIKELY(mood == mood_t::chill_k)) {
+                std::this_thread::sleep_for(std::chrono::microseconds(sleep_length_micros_));
+                continue;
+            }
 
-            fork_trampoline_pointer_(fork_lambda_pointer_, thread_index);
-            last_fork_generation = new_fork_generation;
+            fork_trampoline_(fork_state_, thread_index);
+            last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
             _FU_MAYBE_UNUSED thread_index_t const before_decrement =
@@ -373,9 +534,243 @@ class thread_pool {
     }
 };
 
-using thread_pool_t = thread_pool<std::allocator<std::thread>>;
+using thread_pool_t = thread_pool<>;
 
+#pragma region Concepts
+#if _FU_DETECT_CPP_20
+
+struct broadcasted_noop_t {
+    template <typename index_type_>
+    void operator()(index_type_) const noexcept
+        requires(std::unsigned_integral<index_type_> && std::convertible_to<index_type_, std::size_t>)
+    {}
+};
+
+template <typename pool_type_>
+concept is_pool = //
+    std::unsigned_integral<decltype(std::declval<pool_type_ const &>().threads_count())> &&
+    std::convertible_to<decltype(std::declval<pool_type_ const &>().threads_count()), std::size_t> &&
+    requires(pool_type_ &p) {
+        { p.broadcast(broadcasted_noop_t {}) };
+    };
+
+template <typename pool_type_>
+concept is_unsafe_pool =   //
+    is_pool<pool_type_> && //
+    requires(pool_type_ &p) {
+        { p.unsafe_broadcast(broadcasted_noop_t {}) } -> std::same_as<void>;
+    } && //
+    requires(pool_type_ &p) {
+        { p.unsafe_join() } -> std::same_as<typename pool_type_::broadcast_join_t>;
+    };
+
+#endif
+#pragma endregion Concepts
 #pragma endregion - Thread Pool
+
+#pragma region - Hardware Friendly Yield
+
+#pragma endregion - Hardware Friendly Yield
+
+#pragma region - NUMA Pools
+#if FU_ENABLE_NUMA
+
+using numa_core_id_t = int; // ? A.k.a. CPU core ID, in [0, threads_count)
+using numa_node_id_t = int; // ? A.k.a. NUMA node ID, in [0, numa_max_node())
+
+/**
+ *  @brief NUMA topology descriptor: describing memory pools and core counts next to them.
+ *
+ *  Uses dynamic memory to store the NUMA nodes and their cores. Assuming we may soon have
+ *  Intel "Sierra Forest"-like CPUs with 288 cores with up to 8 sockets per node, this structure
+ *  can easily grow to 10 KB.
+ */
+template <typename allocator_type_ = std::allocator<char>>
+struct numa_topology {
+
+    struct numa_node_t {
+        numa_node_id_t node_id {-1};                   // ? Unique NUMA node ID, in [0, numa_max_node())
+        std::size_t memory_size {0};                   // ? RAM volume in bytes
+        numa_core_id_t const *first_core_id {nullptr}; // ? Pointer to the first core ID in the `core_ids` array
+        std::size_t core_count {0};                    // ? Number of items in `core_ids` array
+    };
+
+    using allocator_t = allocator_type_;
+    using cores_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<int>;
+    using nodes_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<numa_node_t>;
+
+  private:
+    numa_node_t *nodes_ {nullptr};
+    numa_core_id_t *grouped_core_ids_ {nullptr}; // ? Unsigned integers in [0, threads_count), grouped by NUMA node
+    std::size_t nodes_count_ {0};                // ? Number of NUMA nodes
+    std::size_t cores_count_ {0};                // ? Total number of cores in all nodes
+    allocator_t allocator_ {};
+
+  public:
+    constexpr numa_topology() noexcept = default;
+    numa_topology(numa_topology &&o) noexcept
+        : allocator_(std::move(o.allocator_)), nodes_(o.nodes_), grouped_core_ids_(o.grouped_core_ids_),
+          nodes_count_(o.nodes_count_), cores_count_(o.cores_count_) {
+        o.nodes_ = nullptr;
+        o.grouped_core_ids_ = nullptr;
+        o.nodes_count_ = 0;
+        o.cores_count_ = 0;
+    }
+
+    numa_topology(numa_topology const &) = delete;
+    numa_topology &operator=(numa_topology const &) = delete;
+    numa_topology &operator=(numa_topology &&) = delete;
+
+    ~numa_topology() noexcept { reset(); }
+
+    void reset() noexcept {
+        cores_allocator_t cores_alloc {allocator_};
+        nodes_allocator_t nodes_alloc {allocator_};
+
+        if (grouped_core_ids_) cores_alloc.deallocate(grouped_core_ids_, cores_count_);
+        if (nodes_) nodes_alloc.deallocate(nodes_, nodes_count_);
+
+        nodes_ = nullptr;
+        grouped_core_ids_ = nullptr;
+        nodes_count_ = cores_count_ = 0;
+    }
+
+    std::size_t nodes_count() const noexcept { return nodes_count_; }
+    std::size_t threads_count() const noexcept { return cores_count_; }
+    numa_node_t node(std::size_t const node_id) const noexcept {
+        assert(node_id < nodes_count_ && "Node ID is out of bounds");
+        return nodes_[node_id];
+    }
+
+    /**
+     *  @brief Harvests CPU-memory topology.
+     *  @retval false if the kernel lacks NUMA support or the harvest failed.
+     *  @retval true if the harvest was successful and the topology is ready to use.
+     */
+    bool try_harvest() noexcept {
+        struct bitmask *numa_mask = nullptr;
+        numa_node_t *nodes_ptr = nullptr;
+        numa_core_id_t *cores_ptr = nullptr;
+        numa_node_id_t max_numa_node_id = -1;
+
+        // Allocators must be visible to the cleanup path
+        nodes_allocator_t nodes_alloc {allocator_};
+        cores_allocator_t cores_alloc {allocator_};
+
+        // These counters are reused in the failure handler
+        std::size_t fetched_nodes = 0, fetched_cores = 0;
+
+        if (numa_available() < 0) goto failed_harvest; // ! Linux kernel lacks NUMA support
+
+        numa_mask = numa_allocate_cpumask();
+        if (!numa_mask) goto failed_harvest; // ! Allocation failed
+
+        // First pass – measure
+        max_numa_node_id = numa_max_node();
+        for (numa_node_id_t node_id = 0; node_id <= max_numa_node_id; ++node_id) {
+            long long dummy;
+            if (numa_node_size64(node_id, &dummy) < 0) continue;     // ! Offline node
+            if (numa_node_to_cpus(node_id, numa_mask) < 0) continue; // ! Invalid CPU map
+            fetched_nodes += 1;
+            fetched_cores += static_cast<std::size_t>(numa_bitmask_weight(numa_mask));
+        }
+        if (fetched_nodes == 0) goto failed_harvest; // ! Zero nodes is not a valid state
+
+        // Second pass – allocate
+        nodes_ptr = nodes_alloc.allocate(fetched_nodes);
+        cores_ptr = cores_alloc.allocate(fetched_cores);
+        if (!nodes_ptr || !cores_ptr) goto failed_harvest; // ! Allocation failed
+
+        // Populate
+        for (numa_node_id_t node_id = 0, core_id = 0; node_id <= max_numa_node_id; ++node_id) {
+            long long memory_size;
+            if (numa_node_size64(node_id, &memory_size) < 0) continue;
+            if (numa_node_to_cpus(node_id, numa_mask) < 0) continue;
+
+            numa_node_t &node = nodes_ptr[node_id];
+            node.node_id = node_id;
+            node.memory_size = static_cast<std::size_t>(memory_size);
+            node.first_core_id = cores_ptr + core_id;
+            node.core_count = static_cast<std::size_t>(numa_bitmask_weight(numa_mask));
+
+            // Most likely, this will fill `cores_ptr` with `std::iota`-like values
+            for (std::size_t bit_offset = 0; bit_offset < numa_mask->size; ++bit_offset)
+                if (numa_bitmask_isbitset(numa_mask, bit_offset))
+                    cores_ptr[core_id++] = static_cast<numa_core_id_t>(bit_offset);
+        }
+
+        // Commit
+        nodes_ = nodes_ptr;
+        grouped_core_ids_ = cores_ptr;
+        nodes_count_ = fetched_nodes;
+        cores_count_ = fetched_cores;
+
+        numa_free_cpumask(numa_mask); // ? Clean up
+        return true;
+
+    failed_harvest:
+        if (nodes_ptr) nodes_alloc.deallocate(nodes_ptr, fetched_nodes);
+        if (cores_ptr) cores_alloc.deallocate(cores_ptr, fetched_cores);
+        if (numa_mask) numa_free_cpumask(numa_mask);
+        return false;
+    }
+};
+
+/** @brief STL-compatible allocator that puts memory on a fixed NUMA node. */
+template <typename value_type_>
+struct numa_allocator {
+    using value_type = value_type_;
+    numa_node_id_t node_id {-1};
+
+    explicit numa_allocator(numa_node_id_t id = -1) noexcept : node_id(id) {}
+    template <typename other_type_>
+    constexpr numa_allocator(numa_allocator<other_type_> const &o) noexcept : node_id(o.node_id) {}
+
+    value_type *allocate(std::size_t n) noexcept {
+        return static_cast<value_type *>(numa_alloc_onnode(n * sizeof(value_type), node_id));
+    }
+    void deallocate(value_type *p, std::size_t n) noexcept { numa_free(p, n * sizeof(value_type)); }
+
+    template <typename other_type_>
+    bool operator==(numa_allocator<other_type_> const &o) const noexcept {
+        return node_id == o.node_id;
+    }
+
+    template <typename other_type_>
+    bool operator!=(numa_allocator<other_type_> const &o) const noexcept {
+        return node_id != o.node_id;
+    }
+};
+
+/**
+ *  @brief A thread-pool addressing all of the threads on a certain NUMA node.
+ */
+template <                                                  //
+    typename allocator_type_ = numa_allocator<std::thread>, //
+    typename micro_yield_type_ = standard_yield_t,          //
+    typename index_type_ = std::size_t,                     //
+    std::size_t alignment_ = default_alignment_k            //
+    >
+struct numa_thread_pool {};
+
+template <                                                  //
+    typename allocator_type_ = numa_allocator<std::thread>, //
+    typename micro_yield_type_ = standard_yield_t,          //
+    typename index_type_ = std::size_t,                     //
+    std::size_t alignment_ = default_alignment_k            //
+    >
+struct numa_thread_pools {};
+
+using numa_thread_pool_t = numa_thread_pool<>;
+using numa_thread_pools_t = numa_thread_pools<>;
+
+// static_assert(is_unsafe_pool<thread_pool_t> && is_unsafe_pool<numa_thread_pool_t>,
+//               "These thread pools must be flexible and support unsafe operations");
+// static_assert(is_pool<thread_pool_t> && is_pool<numa_thread_pool_t> && is_pool<numa_thread_pools_t>,
+//               "These thread pools must be fully compatible with the high-level APIs");
+
+#endif // FU_ENABLE_NUMA
+#pragma endregion - NUMA Pools
 
 #pragma region - Indexed Tasks
 
@@ -414,34 +809,29 @@ struct dummy_lambda_t {};
  *  @param[in] n The total length of the range to split between threads.
  *  @param[in] function The callback, receiving @b `prong_t` or an unsigned integer and the slice length.
  */
-template <                                                  //
-    typename allocator_type_ = std::allocator<std::thread>, //
-    typename index_type_ = std::size_t,                     //
-    std::size_t alignment_ = default_alignment_k,           //
-    typename function_type_ = dummy_lambda_t                //
-    >
-void for_slices(                                                 //
-    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
-    std::size_t const n, function_type_ const &function) noexcept {
-
-    using pool_t = thread_pool<allocator_type_, index_type_, alignment_>;
-    using thread_index_t = typename pool_t::thread_index_t;
-    using index_t = index_type_;
-    using prong_t = prong<index_t>; // ? A.k.a. "task" = (thread_index, task_index)
-
-#if _FU_DETECT_CPP_17 // ? Having static asserts on C++17 this helps with saner compilation errors
-    // ? Exception handling and aggregating return values drastically increases code complexity
-    static_assert((std::is_nothrow_invocable_r<void, function_type_, prong_t, index_t>::value ||
-                   std::is_nothrow_invocable_r<void, function_type_, index_t, index_t>::value),
-                  "The callback must be invocable with a `prong_t` or a `index_t` argument and an unsigned counter");
+template <typename pool_type_ = thread_pool_t, typename function_type_ = dummy_lambda_t>
+#if _FU_DETECT_CPP_20
+    requires(                    //
+        (is_pool<pool_type_>) && //
+        // ? The callback must be invocable with a `prong_t` or a `index_t` argument and an unsigned counter
+        (std::is_nothrow_invocable_r_v<void, function_type_, prong<typename pool_type_::index_t>,
+                                       typename pool_type_::index_t> ||
+         std::is_nothrow_invocable_r_v<void, function_type_, typename pool_type_::index_t,
+                                       typename pool_type_::index_t>))
 #endif
+void for_slices(pool_type_ &pool, std::size_t const n, function_type_ const &function) noexcept {
+
+    using pool_t = pool_type_;
+    using thread_index_t = typename pool_t::thread_index_t;
+    using index_t = typename pool_t::index_t; // ? A.k.a. "task index" in [0, prongs_count)
+    using prong_t = prong<index_t>;           // ? A.k.a. "task" = {thread_index, task_index}
 
     assert(n <= static_cast<std::size_t>(std::numeric_limits<index_t>::max()) && "Will overflow");
     index_t const prongs_count = static_cast<index_t>(n);
     if (prongs_count == 0) return;
 
     // No need to slice the workload if we only have one thread
-    thread_index_t const threads_count = pool.threads();
+    thread_index_t const threads_count = pool.threads_count();
     if (threads_count == 1 || prongs_count == 1) return function(prong_t {0, 0}, prongs_count);
 
     // Divide and round-up the workload size per thread - assuming some fuzzer may
@@ -483,18 +873,12 @@ void for_slices(                                                 //
  *  The @p function is called @p (n) times, and each thread receives a slice of consecutive tasks.
  *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
  */
-template <                                                  //
-    typename allocator_type_ = std::allocator<std::thread>, //
-    typename index_type_ = std::size_t,                     //
-    std::size_t alignment_ = default_alignment_k,           //
-    typename function_type_ = dummy_lambda_t                //
-    >
-void for_n(                                                      //
-    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
-    std::size_t const n, function_type_ const &function) noexcept {
+template <typename pool_type_ = thread_pool_t, typename function_type_ = dummy_lambda_t>
+void for_n(pool_type_ &pool, std::size_t const n, function_type_ const &function) noexcept {
 
-    using index_t = index_type_;
-    using prong_t = prong<index_t>; // ? A.k.a. "task" = (thread_index, task_index)
+    using pool_t = pool_type_;
+    using index_t = typename pool_t::index_t; // ? A.k.a. "task index" in [0, prongs_count)
+    using prong_t = prong<index_t>;           // ? A.k.a. "task" = {thread_index, task_index}
 
     for_slices(pool, n, [function](prong_t const start_prong, index_t const count_prongs) noexcept {
         for (index_t prong_offset = 0; prong_offset < count_prongs; ++prong_offset)
@@ -508,28 +892,21 @@ void for_n(                                                      //
  *  @param[in] function The callback, receiving the `prong_t` or the task index as an argument.
  *  @sa `for_n` for a more "balanced" evenly-splittable workload.
  */
-template <                                                  //
-    typename allocator_type_ = std::allocator<std::thread>, //
-    typename index_type_ = std::size_t,                     //
-    std::size_t alignment_ = default_alignment_k,           //
-    typename function_type_ = dummy_lambda_t                //
-    >
-void for_n_dynamic(                                              //
-    thread_pool<allocator_type_, index_type_, alignment_> &pool, //
-    std::size_t const n, function_type_ const &function) noexcept {
-
-    using pool_t = thread_pool<allocator_type_, index_type_, alignment_>;
-    using thread_index_t = typename pool_t::thread_index_t;
-    using index_t = index_type_;
-    using prong_t = prong<index_t>; // ? A.k.a. "task" = (thread_index, prong_index)
-    static constexpr std::size_t alignment_k = pool_t::alignment_k;
-
-#if _FU_DETECT_CPP_17 // ? Having static asserts on C++17 this helps with saner compilation errors
-    // ? Exception handling and aggregating return values drastically increases code complexity
-    static_assert((std::is_nothrow_invocable_r<void, function_type_, prong_t>::value ||
-                   std::is_nothrow_invocable_r<void, function_type_, index_t>::value),
-                  "The callback must be invocable with a `prong_t` or a `index_t` argument");
+template <typename pool_type_ = thread_pool_t, typename function_type_ = dummy_lambda_t>
+#if _FU_DETECT_CPP_20
+    requires(                    //
+        (is_pool<pool_type_>) && //
+        // ? The callback must be invocable with a `prong_t` or a `index_t` argument
+        (std::is_nothrow_invocable_r_v<void, function_type_, prong<typename pool_type_::index_t>> ||
+         std::is_nothrow_invocable_r_v<void, function_type_, typename pool_type_::index_t>))
 #endif
+void for_n_dynamic(pool_type_ &pool, std::size_t const n, function_type_ const &function) noexcept {
+
+    using pool_t = pool_type_;
+    using thread_index_t = typename pool_t::thread_index_t;
+    using index_t = typename pool_t::index_t; // ? A.k.a. "task index" in [0, prongs_count)
+    using prong_t = prong<index_t>;           // ? A.k.a. "task" = {thread_index, prong_index}
+    static constexpr std::size_t alignment_k = pool_t::alignment_k;
 
     // No need to slice the work if there is just one task
     assert(n <= static_cast<std::size_t>(std::numeric_limits<index_t>::max()) && "Will overflow");
@@ -538,7 +915,7 @@ void for_n_dynamic(                                              //
     if (prongs_count == 1) return function(prong_t {0, 0});
 
     // If there is just one thread, all work is done on the current thread
-    thread_index_t const threads_count = pool.threads();
+    thread_index_t const threads_count = pool.threads_count();
     if (threads_count == 1) {
         for (index_t i = 0; i < prongs_count; ++i) function(prong_t {0, i});
         return;

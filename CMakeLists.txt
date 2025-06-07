@@ -12,9 +12,8 @@ set(PROJECT_CXX_STANDARD 11)
 set(PROJECT_CXX_EXTENSIONS OFF)
 set(PROJECT_CXX_STANDARD_REQUIRED ON)
 
-# header-only interface library
+# Header-only interface library
 add_library(fork_union INTERFACE)
-
 target_include_directories(
     fork_union INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
 )
@@ -60,3 +59,28 @@ install(
     NAMESPACE fork_union::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fork_union
 )
+
+# On Linux, let's check if `libnuma` and `pthreads` are available.
+if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
+    find_package(Threads) # Creates Threads::Threads if found
+    if (Threads_FOUND)
+        target_link_libraries(fork_union INTERFACE Threads::Threads)
+    endif ()
+
+    find_library(NUMA_LIBRARY NAMES numa)
+    set(NUMA_FOUND FALSE)
+    if (NUMA_LIBRARY)
+        set(NUMA_FOUND TRUE)
+        message(STATUS "libnuma found: ${NUMA_LIBRARY}")
+    else ()
+        message(STATUS "libnuma not found – building without NUMA support")
+    endif ()
+    if (NUMA_FOUND)
+        target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY})
+        target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
+    else ()
+        target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
+    endif ()
+else () # Non-Linux platforms
+    target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
+endif ()
