@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 project(
     fork_union
-    VERSION 1.0.4
+    VERSION 1.0.5
     DESCRIPTION "OpenMP-style cross-platform fine-grained parallelism library"
     LANGUAGES CXX
 )
