@@ -155,18 +155,23 @@ fn iteration_rayon_dynamic(pool: &ThreadPool, bodies: &mut [Body], forces: &mut 
     let n = bodies.len();
 
     pool.install(|| {
-        forces.par_iter_mut().enumerate().for_each(|(i, force)| {
-            let mut acc = Vector3::default();
-            for j in 0..n {
-                acc += gravitational_force(&bodies[i], &bodies[j]);
-            }
-            *force = acc;
-        });
+        forces
+            .par_iter_mut()
+            .with_max_len(1)
+            .enumerate()
+            .for_each(|(i, force)| {
+                let mut acc = Vector3::default();
+                for j in 0..n {
+                    acc += gravitational_force(&bodies[i], &bodies[j]);
+                }
+                *force = acc;
+            });
     });
 
     pool.install(|| {
         bodies
             .par_iter_mut()
+            .with_max_len(1)
             .zip(forces.par_iter())
             .for_each(|(b, f)| apply_force(b, f));
     });
