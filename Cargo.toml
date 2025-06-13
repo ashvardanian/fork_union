@@ -25,3 +25,4 @@ bench = false
 [dev-dependencies]
 rayon = "1.10"
 rand = "0.9"
+tokio = { version = "1.45", features = ["rt-multi-thread", "sync"] }

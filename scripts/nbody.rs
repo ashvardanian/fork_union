@@ -7,8 +7,8 @@
 //! - `NBODY_BACKEND` - backend to use for the simulation (default: `fork_union_static`).
 //! - `NBODY_THREADS` - number of threads to use for the simulation (default: number of hardware threads).
 //!
-//! The backends include: `fork_union_static`, `fork_union_dynamic`, `rayon_static`, and `rayon_dynamic`.
-//! To compile and run:
+//! The backends include: `fork_union_static`, `fork_union_dynamic`, `rayon_static`, `rayon_dynamic`,
+//! and `tokio`. To compile and run:
 //!
 //! ```sh
 //! cargo run --example nbody --release
@@ -25,6 +25,8 @@
 //!     NBODY_BACKEND=fork_union_static cargo run --example nbody --release
 //! time NBODY_COUNT=128 NBODY_THREADS=$(nproc) NBODY_ITERATIONS=1000000 \
 //!     NBODY_BACKEND=fork_union_dynamic cargo run --example nbody --release
+//! time NBODY_COUNT=128 NBODY_THREADS=$(nproc) NBODY_ITERATIONS=1000000 \
+//!     NBODY_BACKEND=tokio cargo run --example nbody --release
 //! ```
 use rand::{rng, Rng};
 use std::env;
@@ -32,6 +34,7 @@ use std::error::Error;
 
 use fork_union as fu;
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
+use tokio::task::JoinSet;
 
 /// Physical constants.
 const G_CONST: f32 = 6.674e-11;
@@ -213,6 +216,43 @@ fn iteration_rayon_static(pool: &ThreadPool, bodies: &mut [Body], forces: &mut [
     });
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Tokio kernels
+// ────────────────────────────────────────────────────────────────────────────
+
+async fn iteration_tokio_blocking(
+    set: &mut JoinSet<(usize, Vector3)>,
+    bodies: &mut [Body],
+    forces: &mut [Vector3],
+) {
+    debug_assert!(set.is_empty());
+
+    let n = bodies.len();
+    let bodies_ptr = fu::SyncConstPtr::new(bodies.as_ptr()); // Send + Sync
+
+    for i in 0..n {
+        let ptr = bodies_ptr; // capture by value (Copy)
+        set.spawn_blocking(move || unsafe {
+            let bi = ptr.get(i); // &Body, immutable
+            let mut acc = Vector3::default();
+            for j in 0..n {
+                acc += gravitational_force(bi, ptr.get(j));
+            }
+            (i, acc)
+        });
+    }
+
+    while let Some(res) = set.join_next().await {
+        let (idx, acc) = res.expect("task panicked");
+        forces[idx] = acc;
+    }
+
+    // This part is sequential
+    for (b, f) in bodies.iter_mut().zip(forces.iter()) {
+        apply_force(b, f);
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let n = env::var("NBODY_COUNT").ok().and_then(|v| v.parse().ok());
     let iters = env::var("NBODY_ITERATIONS")
@@ -284,6 +324,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                 iteration_rayon_dynamic(&pool, &mut bodies, &mut forces);
             }
         }
+        "tokio" => {
+            let pool = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(threads)
+                .max_blocking_threads(threads) // 1-to-1 with CPU cores
+                .enable_all()
+                .build()?;
+
+            pool.block_on(async {
+                let mut set = tokio::task::JoinSet::<(usize, Vector3)>::new();
+                for _ in 0..iters {
+                    iteration_tokio_blocking(&mut set, &mut bodies, &mut forces).await;
+                    debug_assert!(set.is_empty());
+                }
+            });
+        }
+
         _ => panic!("Unsupported backend: '{backend}'"),
     }
 
