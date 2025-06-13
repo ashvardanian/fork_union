@@ -61,7 +61,7 @@
 
 #define FORK_UNION_VERSION_MAJOR 1
 #define FORK_UNION_VERSION_MINOR 0
-#define FORK_UNION_VERSION_PATCH 2
+#define FORK_UNION_VERSION_PATCH 4
 
 #if !defined(FU_ALLOW_UNSAFE)
 #define FU_ALLOW_UNSAFE 0
@@ -305,6 +305,44 @@ class spin_mutex {
 #endif // _FU_DETECT_CPP_20
 
 using spin_mutex_t = spin_mutex<>;
+
+template <typename index_type_ = std::size_t>
+struct indexed_range {
+    using index_t = index_type_;
+
+    index_t first {0};
+    index_t count {0};
+};
+
+using indexed_range_t = indexed_range<>;
+
+/**
+ *  @brief Splits a range of tasks into fair-sized chunks for each thread.
+ *  @see https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/
+ *
+ *  The first `(tasks % threads)` chunks have size `ceil(tasks / threads)`.
+ *  The remaining `tasks - (tasks % threads)` chunks have size `floor(tasks / threads)`
+ */
+template <typename index_type_ = std::size_t>
+struct indexed_split {
+    using index_t = index_type_;
+    using range_t = indexed_range<index_t>;
+
+    index_t quotient {0};
+    index_t remainder {0};
+
+    indexed_split() = default;
+    indexed_split(index_t const tasks_count, index_t const threads_count) noexcept
+        : quotient(tasks_count / threads_count), remainder(tasks_count % threads_count) {}
+
+    range_t operator[](index_t const i) const noexcept {
+        index_t const begin = quotient * i + (i < remainder ? i : remainder);
+        index_t const count = quotient + (i < remainder ? 1 : 0);
+        return {begin, count};
+    }
+};
+
+using indexed_split_t = indexed_split<>;
 
 #pragma endregion - Helpers and Constants
 
