@@ -158,7 +158,7 @@ impl Inner {
 /// ```no_run
 /// use fork_union as fu;
 /// let pool = fu::spawn(4); // ! Unsafe shortcut, see below
-/// pool.broadcast(|thread_index| {
+/// pool.for_threads(|thread_index| {
 ///     println!("Hello from thread {thread_index}!");
 /// });
 /// ```
@@ -383,7 +383,7 @@ where
     let tasks_per_thread =
         tasks_per_thread_lower_bound + ((tasks_per_thread_lower_bound * threads) < n) as usize;
 
-    pool.broadcast(|thread_index| {
+    pool.for_threads(|thread_index| {
         let begin = thread_index * tasks_per_thread;
         let begin_lower_bound = tasks_per_thread_lower_bound * thread_index;
         let begin_overflows = begin_lower_bound > begin;
@@ -453,7 +453,7 @@ where
 
     let prongs_dynamic = prongs_count - prongs_static;
     let progress = Padded::new(AtomicUsize::new(0));
-    pool.broadcast(|thread_index| {
+    pool.for_threads(|thread_index| {
         let static_index = prongs_dynamic + thread_index;
         let mut prong = Prong {
             thread_index,
@@ -642,7 +642,7 @@ mod tests {
         );
         let visited_ref = Arc::clone(&visited);
 
-        pool.broadcast(move |thread_index| {
+        pool.for_threads(move |thread_index| {
             visited_ref[thread_index].store(true, Ordering::Relaxed);
         });
 

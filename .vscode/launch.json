@@ -19,6 +19,9 @@
                     "ignoreFailures": true
                 },
                 {
+                    "text": "break pending on"
+                },
+                {
                     "text": "break abort"
                 },
                 {

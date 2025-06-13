@@ -16,6 +16,7 @@ template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t
 template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
 template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
 template class fu::thread_pool<>;
+template class fu::colocated_thread_pool<>;
 template class fu::numa_thread_pool<>;
 
 constexpr std::size_t default_parts = 10000; // 10K
@@ -29,7 +30,7 @@ struct make_pool_t {
 
 #if FU_ENABLE_NUMA
 static fu::numa_topology_t numa_topology;
-struct make_numa_pool_t {
+struct make_numa_thread_pool_t {
     fu::numa_thread_pool_t construct() const noexcept { return fu::numa_thread_pool_t("fork_union"); }
     fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
 };
@@ -57,7 +58,7 @@ static bool test_broadcast() noexcept {
     if (!pool.try_spawn(maker.scope())) return false;
 
     std::vector<std::atomic<bool>> visited(pool.threads_count());
-    pool.broadcast([&](std::size_t const thread_index) noexcept { //
+    pool.for_threads([&](std::size_t const thread_index) noexcept { //
         visited[thread_index].store(true, std::memory_order_relaxed);
     });
 
@@ -93,8 +94,8 @@ static bool test_exclusivity() noexcept {
 
         // Repeat the same logic a few times and check for correctness:
         for (std::size_t iteration = 0; iteration < 3; ++iteration) {
-            auto join_second = second_pool.broadcast(do_second);
-            first_pool.broadcast(do_first);
+            auto join_second = second_pool.for_threads(do_second);
+            first_pool.for_threads(do_first);
             join_second.wait();
 
             // Validate:
@@ -115,10 +116,10 @@ static bool test_exclusivity() noexcept {
         std::size_t const total_size = first_size + second_size;
         std::vector<std::atomic<bool>> visited(total_size);
 
-        auto join_second = second_pool.broadcast([&](std::size_t const thread_index) noexcept {
+        auto join_second = second_pool.for_threads([&](std::size_t const thread_index) noexcept {
             visited[first_size + thread_index].store(true, std::memory_order_relaxed);
         });
-        first_pool.broadcast([&](std::size_t const thread_index) noexcept {
+        first_pool.for_threads([&](std::size_t const thread_index) noexcept {
             visited[thread_index].store(true, std::memory_order_relaxed);
         });
         join_second.wait();
@@ -235,7 +236,7 @@ static bool test_for_n_dynamic() noexcept {
 
 /** @brief Stress-tests the implementation by oversubscribing the number of threads. */
 template <typename make_pool_type_ = make_pool_t>
-static bool test_oversubscribed_unbalanced_threads() noexcept {
+static bool test_oversubscribed_threads() noexcept {
     constexpr std::size_t oversubscription = 3;
 
     auto maker = make_pool_type_ {};
@@ -362,26 +363,26 @@ int main(void) {
         char const *name;
         test_func_t *function;
     } const unit_tests[] = {
-        {"`try_spawn` zero threads", test_try_spawn_zero},                                  //
-        {"`try_spawn` normal", test_try_spawn_success},                                     //
-        {"`broadcast` dispatch", test_broadcast},                                           //
-        {"`caller_exclusive_k` calls", test_exclusivity},                                   //
-        {"`for_n` for uncomfortable input size", test_uncomfortable_input_size},            //
-        {"`for_n` static scheduling", test_for_n},                                          //
-        {"`for_n_dynamic` dynamic scheduling", test_for_n_dynamic},                         //
-        {"`for_n_dynamic` oversubscribed threads", test_oversubscribed_unbalanced_threads}, //
-        {"`terminate` avoided", test_mixed_restart<false>},                                 //
-        {"`terminate` and re-spawn", test_mixed_restart<true>},                             //
+        {"`try_spawn` zero threads", test_try_spawn_zero},                       //
+        {"`try_spawn` normal", test_try_spawn_success},                          //
+        {"`broadcast` dispatch", test_broadcast},                                //
+        {"`caller_exclusive_k` calls", test_exclusivity},                        //
+        {"`for_n` for uncomfortable input size", test_uncomfortable_input_size}, //
+        {"`for_n` static scheduling", test_for_n},                               //
+        {"`for_n_dynamic` dynamic scheduling", test_for_n_dynamic},              //
+        {"`for_n_dynamic` oversubscribed threads", test_oversubscribed_threads}, //
+        {"`terminate` avoided", test_mixed_restart<false>},                      //
+        {"`terminate` and re-spawn", test_mixed_restart<true>},                  //
 #if FU_ENABLE_NUMA
-        {"NUMA `try_spawn` normal", test_try_spawn_success<make_numa_pool_t>},                                     //
-        {"NUMA `broadcast` dispatch", test_broadcast<make_numa_pool_t>},                                           //
-        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_numa_pool_t>},                                   //
-        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_numa_pool_t>},            //
-        {"NUMA `for_n` static scheduling", test_for_n<make_numa_pool_t>},                                          //
-        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_numa_pool_t>},                         //
-        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_unbalanced_threads<make_numa_pool_t>}, //
-        {"NUMA `terminate` avoided", test_mixed_restart<false, make_numa_pool_t>},                                 //
-        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_numa_pool_t>},                             //
+        {"NUMA `try_spawn` normal", test_try_spawn_success<make_numa_thread_pool_t>},
+        {"NUMA `broadcast` dispatch", test_broadcast<make_numa_thread_pool_t>},
+        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_numa_thread_pool_t>},
+        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_numa_thread_pool_t>},
+        {"NUMA `for_n` static scheduling", test_for_n<make_numa_thread_pool_t>},
+        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_numa_thread_pool_t>},
+        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_numa_thread_pool_t>},
+        {"NUMA `terminate` avoided", test_mixed_restart<false, make_numa_thread_pool_t>},
+        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_numa_thread_pool_t>},
 #endif // FU_ENABLE_NUMA
     };
 
