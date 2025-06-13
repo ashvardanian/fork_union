@@ -2,6 +2,12 @@
 function (set_target_properties_for_fork_union_script target_name)
     target_link_libraries(${TGT} PRIVATE fork_union)
 
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # This warning annoys us by reminding, that before GCC 4.6 the ABI for passing objects aligned to ≥32-bytes was
+        # different... but that GCC version was released in 2014, over a decade ago.
+        target_compile_options(${TGT} PRIVATE -Wno-psabi)
+    endif ()
+
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
         message(STATUS "Enabling optimizations for ${TGT}")
