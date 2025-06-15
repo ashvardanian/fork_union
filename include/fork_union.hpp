@@ -56,7 +56,7 @@
 
 #define FORK_UNION_VERSION_MAJOR 1
 #define FORK_UNION_VERSION_MINOR 0
-#define FORK_UNION_VERSION_PATCH 5
+#define FORK_UNION_VERSION_PATCH 6
 
 /**
  *  On C++17 and later we can detect misuse of lambdas that are not properly annotated.
