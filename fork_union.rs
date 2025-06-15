@@ -379,19 +379,16 @@ where
         return;
     }
 
-    let tasks_per_thread_lower_bound = n / threads;
-    let tasks_per_thread =
-        tasks_per_thread_lower_bound + ((tasks_per_thread_lower_bound * threads) < n) as usize;
+    // The first (N % M) chunks have size ceil(N/M)
+    // The remaining N - (N % M) chunks have size floor(N/M)
+    //     where N = n, M = threads
+    // See https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/
+    let quotient = n / threads;
+    let remainder = n % threads;
 
     pool.broadcast(|thread_index| {
-        let begin = thread_index * tasks_per_thread;
-        let begin_lower_bound = tasks_per_thread_lower_bound * thread_index;
-        let begin_overflows = begin_lower_bound > begin;
-        let begin_exceeds = begin >= n;
-        if begin_overflows || begin_exceeds {
-            return;
-        }
-        let count = std::cmp::min(begin.saturating_add(tasks_per_thread), n) - begin;
+        let begin = quotient * thread_index + std::cmp::min(thread_index, remainder);
+        let count = quotient + usize::from(thread_index < remainder);
         function(
             Prong {
                 thread_index,
