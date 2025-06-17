@@ -8,21 +8,21 @@
 /* Namespaces, constants, and explicit type instantiations. */
 namespace fu = ashvardanian::fork_union;
 
-using fu32_t = fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
-using fu16_t = fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
-using fu8_t = fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
+using fu32_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
+using fu16_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
+using fu8_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
 
-template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
-template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
-template class fu::thread_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
-template class fu::thread_pool<>;
-template class fu::colocated_thread_pool<>;
-template class fu::numa_thread_pool<>;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
+template class fu::basic_pool<>;
+template class fu::colocated_linux_pool<>;
+template class fu::linux_pool<>;
 
 constexpr std::size_t default_parts = 10000; // 10K
 
 struct make_pool_t {
-    fu::thread_pool_t construct() const noexcept { return fu::thread_pool_t(); }
+    fu::basic_pool_t construct() const noexcept { return fu::basic_pool_t(); }
     std::size_t scope(std::size_t oversubscription = 1) const noexcept {
         return std::thread::hardware_concurrency() * oversubscription;
     }
@@ -30,14 +30,14 @@ struct make_pool_t {
 
 #if FU_ENABLE_NUMA
 static fu::numa_topology_t numa_topology;
-struct make_numa_thread_pool_t {
-    fu::numa_thread_pool_t construct() const noexcept { return fu::numa_thread_pool_t("fork_union"); }
+struct make_linux_pool_t {
+    fu::linux_pool_t construct() const noexcept { return fu::linux_pool_t("fork_union"); }
     fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
 };
 #endif
 
 static bool test_try_spawn_zero() noexcept {
-    fu::thread_pool_t pool;
+    fu::basic_pool_t pool;
     return !pool.try_spawn(0u);
 }
 
@@ -374,15 +374,15 @@ int main(void) {
         {"`terminate` avoided", test_mixed_restart<false>},                      //
         {"`terminate` and re-spawn", test_mixed_restart<true>},                  //
 #if FU_ENABLE_NUMA
-        {"NUMA `try_spawn` normal", test_try_spawn_success<make_numa_thread_pool_t>},
-        {"NUMA `broadcast` dispatch", test_broadcast<make_numa_thread_pool_t>},
-        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_numa_thread_pool_t>},
-        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_numa_thread_pool_t>},
-        {"NUMA `for_n` static scheduling", test_for_n<make_numa_thread_pool_t>},
-        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_numa_thread_pool_t>},
-        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_numa_thread_pool_t>},
-        {"NUMA `terminate` avoided", test_mixed_restart<false, make_numa_thread_pool_t>},
-        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_numa_thread_pool_t>},
+        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_pool_t>},
+        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_pool_t>},
+        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_pool_t>},
+        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_pool_t>},
+        {"NUMA `for_n` static scheduling", test_for_n<make_linux_pool_t>},
+        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_pool_t>},
+        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_pool_t>},
+        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_pool_t>},
+        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_pool_t>},
 #endif // FU_ENABLE_NUMA
     };
 

@@ -13,20 +13,20 @@
  *  @code{.cpp}
  *  #include <cstdio> // `std::printf`
  *  #include <cstdlib> // `EXIT_FAILURE`, `EXIT_SUCCESS`
- *  #include <fork_union.hpp> // `fu::thread_pool_t`
+ *  #include <fork_union.hpp> // `fu::basic_pool_t`
  *
  *  using fu = ashvardanian::fork_union;
  *  int main(int argc, char *argv[]) {
  *
- *      fu::thread_pool_t pool;
+ *      fu::basic_pool_t pool;
  *      if (!pool.try_spawn(std::thread::hardware_concurrency()))
  *          return EXIT_FAILURE;
  *
- *      pool.for_n(argc, [](auto prong) noexcept {
- *          auto [thread_index, task_index, _] = prong;
+ *      pool.for_n(argc, [=](auto prong) noexcept {
+ *          auto [task_index, thread_index, colocation_index] = prong;
  *          std::printf(
- *              "Printing argument %zu from thread %zu: %s\n",
- *              task_index, thread_index, argv[task_index]);
+ *              "Printing argument # %zu (of %zu) from thread # %zu at colocation # %zu: %s\n",
+ *              task_index, argc, thread_index, colocation_index, argv[task_index]);
  *      });
  *      return EXIT_SUCCESS;
  *  }
@@ -43,7 +43,7 @@
  *  On Linux, when libNUMA and libpthread are available, the library can also leverage NUMA-aware
  *  memory allocations and pin threads to specific physical cores to increase memory locality.
  *  It should reduce memory access latency by around 35% on average, compared to remote accesses.
- *  @sa `numa_topology_t`, `colocated_thread_pool_t`, `numa_thread_pool_t`.
+ *  @sa `numa_topology_t`, `colocated_linux_pool_t`, `linux_pool_t`.
  *
  *  On x86, Arm, and RISC-V architectures, depending on the CPU features available, the library also
  *  exposes cheaper "busy waiting" mechanisms, such as `tpause`, `wfet`, and `yield` instructions.
@@ -195,18 +195,18 @@ struct standard_yield_t {
  *  According to the  C++ standard, the destructor of the `broadcast_join_t` will be called
  *  in the end of the `broadcast`-calling expression.
  */
-template <typename thread_pool_type_, typename function_type_>
+template <typename basic_pool_type_, typename function_type_>
 struct broadcast_join {
 
-    using thread_pool_t = thread_pool_type_;
+    using basic_pool_t = basic_pool_type_;
     using function_t = function_type_;
 
   private:
-    thread_pool_t &pool_;
+    basic_pool_t &pool_;
     function_t function_; // ? We need this to extend the lifetime of the lambda
 
   public:
-    explicit broadcast_join(thread_pool_t &pool, function_t func) noexcept : pool_(pool), function_(func) {}
+    explicit broadcast_join(basic_pool_t &pool, function_t func) noexcept : pool_(pool), function_(func) {}
 
     broadcast_join(broadcast_join &&) = default;
     broadcast_join(broadcast_join const &) = delete;
@@ -378,11 +378,11 @@ using indexed_split_t = indexed_split<>;
  *  @code{.cpp}
  *  #include <cstdio> // `std::printf`
  *  #include <cstdlib> // `EXIT_FAILURE`, `EXIT_SUCCESS`
- *  #include <fork_union.hpp> // `thread_pool_t`
+ *  #include <fork_union.hpp> // `basic_pool_t`
  *
  *  using fu = ashvardanian::fork_union;
  *  int main() {
- *      fu::thread_pool_t pool; // ? Alias to `fu::thread_pool<>` template
+ *      fu::basic_pool_t pool; // ? Alias to `fu::basic_pool<>` template
  *      if (!pool.try_spawn(std::thread::hardware_concurrency())) return EXIT_FAILURE;
  *      pool.for_threads([](std::size_t i) noexcept { std::printf("Hi from thread %zu\n", i); });
  *      return EXIT_SUCCESS;
@@ -396,11 +396,11 @@ using indexed_split_t = indexed_split<>;
  *  @code{.cpp}
  *  #include <cstdio> // `std::printf`
  *  #include <cstdlib> // `EXIT_FAILURE`, `EXIT_SUCCESS`
- *  #include <fork_union.hpp> // `thread_pool_t`
+ *  #include <fork_union.hpp> // `basic_pool_t`
  *
  *  using fu = ashvardanian::fork_union;
  *  int main() {
- *      fu::thread_pool_t first_pool, second_pool;
+ *      fu::basic_pool_t first_pool, second_pool;
  *      if (!first_pool.try_spawn(2) || !second_pool.try_spawn(2, fu::caller_exclusive_k)) return EXIT_FAILURE;
  *      auto join = second_pool.for_threads([](std::size_t i) noexcept { poll_ssd(i); });
  *      first_pool.for_threads([](std::size_t i) noexcept { poll_nic(i); });
@@ -422,7 +422,7 @@ template <                                                  //
     typename index_type_ = std::size_t,                     //
     std::size_t alignment_ = default_alignment_k            //
     >
-class thread_pool {
+class basic_pool {
 
   public:
     using allocator_t = allocator_type_;
@@ -457,19 +457,19 @@ class thread_pool {
     alignas(alignment_) std::atomic<epoch_index_t> epoch_ {0};
 
   public:
-    thread_pool(thread_pool &&) = delete;
-    thread_pool(thread_pool const &) = delete;
-    thread_pool &operator=(thread_pool &&) = delete;
-    thread_pool &operator=(thread_pool const &) = delete;
+    basic_pool(basic_pool &&) = delete;
+    basic_pool(basic_pool const &) = delete;
+    basic_pool &operator=(basic_pool &&) = delete;
+    basic_pool &operator=(basic_pool const &) = delete;
 
-    thread_pool(allocator_t const &alloc = {}) noexcept : allocator_(alloc) {}
-    ~thread_pool() noexcept { terminate(); }
+    basic_pool(allocator_t const &alloc = {}) noexcept : allocator_(alloc) {}
+    ~basic_pool() noexcept { terminate(); }
 
     /**
      *  @brief Estimates the amount of memory managed by this pool handle and internal structures.
      *  @note This API is @b not synchronized.
      */
-    std::size_t memory_usage() const noexcept { return sizeof(thread_pool) + threads_count() * sizeof(std::thread); }
+    std::size_t memory_usage() const noexcept { return sizeof(basic_pool) + threads_count() * sizeof(std::thread); }
 
     /** @brief Checks if the thread-pool's core synchronization points are lock-free. */
     bool is_lock_free() const noexcept { return mood_.is_lock_free() && threads_to_sync_.is_lock_free(); }
@@ -556,8 +556,8 @@ class thread_pool {
      *  @sa For advanced resource management, consider `unsafe_broadcast` and `unsafe_join`.
      */
     template <typename function_type_>
-    broadcast_join<thread_pool, function_type_> for_threads(function_type_ &&function) noexcept {
-        broadcast_join<thread_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
+    broadcast_join<basic_pool, function_type_> for_threads(function_type_ &&function) noexcept {
+        broadcast_join<basic_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
         unsafe_for_threads(joiner.function());
         return joiner;
     }
@@ -813,7 +813,7 @@ class thread_pool {
     template <typename function_type_ = dummy_lambda_t>
 #if _FU_DETECT_CPP_20
         requires( // ? The callback must be invocable with a self-reference and a zero island index
-            std::is_nothrow_invocable_r_v<void, function_type_, thread_pool &, colocation_index_t>)
+            std::is_nothrow_invocable_r_v<void, function_type_, basic_pool &, colocation_index_t>)
 #endif
     void for_colocated_threads(function_type_ const &function) noexcept {
         function(static_cast<colocation_index_t>(0), *this);
@@ -826,8 +826,7 @@ class thread_pool {
     template <typename local_buffer_type_, typename function_type_>
 #if _FU_DETECT_CPP_20
         requires( // ? The callback must be invocable with a self-reference and a zero island index
-            std::is_nothrow_invocable_r_v<void, function_type_, thread_pool &, colocation_index_t,
-                                          local_buffer_type_ &>)
+            std::is_nothrow_invocable_r_v<void, function_type_, basic_pool &, colocation_index_t, local_buffer_type_ &>)
 #endif
     void for_colocated_threads(function_type_ const &function) noexcept {
         local_buffer_type_ buffer {};
@@ -889,7 +888,7 @@ class thread_pool {
     }
 };
 
-using thread_pool_t = thread_pool<>;
+using basic_pool_t = basic_pool<>;
 
 #pragma region Concepts
 #if _FU_DETECT_CPP_20
@@ -991,12 +990,81 @@ struct riscv_yield_t {
 
 using numa_node_id_t = int; // ? A.k.a. NUMA node ID, in [0, numa_max_node())
 using numa_core_id_t = int; // ? A.k.a. CPU core ID, in [0, threads_count)
+using qos_level_t = int;    // ? Quality of Service, like: "performance", "efficiency", "low-power"
 
 #if FU_ENABLE_NUMA
 
 enum numa_pin_granularity_t {
     numa_pin_to_core_k = 0,
     numa_pin_to_node_k,
+};
+
+struct ram_page_setting_t {
+    std::size_t size_bytes {0};      // ? Huge page size in bytes, e.g. 4 KB, 2 MB, or 1 GB
+    std::size_t available_pages {0}; // ? Number of pages available for this size, 0 if not available
+};
+
+/**
+ *  @brief Describes the configured & supported (by OS & CPU) memory pages sizes.
+ *
+ *  @section Huge Pages & Transparent Huge Pages
+ *
+ *  Virtual Address Space (VAS) is divided into pages, typically 4 KB in size.
+ *  Converting a virtual address to a physical address requires a page table lookup.
+ *  Think of it as a hash table... and as everyone knows, hash table lookups and updates
+ *  aren't free, so most chips have a "Translation Lookaside Buffer" @b (TLB) cache
+ *  as part of the "Memory Management Unit" @b (MMU) to speed up the process.
+ *
+ *  To keep it fast, in Big Data applications, one would like to use larger pages,
+ *  to reduce the number of distinct entries in the TLB cache. Going from 4 KB to
+ *  2 MB or 1 GB "Huge Pages" @b (HPs), reduces the table size by 512 or 262K times,
+ *  respectively.
+ *
+ *  To benefit from those, some applications rely on "Transparent Huge Pages" @b (THP),
+ *  which are automatically allocated by the kernel. Such implicit behaviour isn't
+ *  great for performance-oriented applications, so the `linux_numa_allocator` provides
+ *  a @b `fetch_max_huge_size` API
+ *
+ *  @see https://docs.kernel.org/admin-guide/mm/hugetlbpage.html
+ */
+template <std::size_t max_page_sizes_ = 32>
+struct ram_page_settings {
+    static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
+    std::array<ram_page_setting_t, max_page_sizes_k> sizes {0}; // ? Huge page sizes in bytes
+    std::size_t count_sizes {0};                                // ? Number of supported huge page sizes
+
+    /**
+     *  @brief Fetches the maximum supported huge page size on the current system.
+     *  @retval `numa_pagesize()` if huge pages are not supported or not available.
+     *  @retval 2 MB is the most common huge page size on Linux systems.
+     *
+     *  Being supported by the kernel, doesn't mean that pages of that size have
+     *  a valid mount point. That can be checked with @b `hugetlbfs_find_path_for_size`.
+     */
+    bool try_harvest() noexcept {
+        // glibc ≥ 2.10 supports `gethugepagesizes`
+        long count = ::gethugepagesizes(nullptr, 0);
+        if (count <= 0) return false;
+
+        std::array<long, 32> buf {};
+        if (count > static_cast<long>(buf.size())) count = buf.size();
+        ::gethugepagesizes(buf.data(), count);
+
+        // Export the settings into the `sizes` array
+        for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i) {
+            if (buf[i] <= 0) continue; // ? Skip invalid sizes
+            sizes[i].size_bytes = static_cast<std::size_t>(buf[i]);
+        }
+        count_sizes = static_cast<std::size_t>(count);
+        return true;
+    }
+
+    ram_page_setting_t const *begin() const noexcept { return sizes.data(); }
+    ram_page_setting_t const *end() const noexcept { return sizes.data() + count_sizes; }
+    ram_page_setting_t const &operator[](std::size_t const index) const noexcept {
+        assert(index < count_sizes && "Index is out of bounds");
+        return sizes[index];
+    }
 };
 
 /**
@@ -1011,7 +1079,7 @@ struct numa_node_t {
 };
 
 /**
- *  @brief Used inside `colocated_thread_pool` to describe a pinned thread.
+ *  @brief Used inside `colocated_linux_pool` to describe a pinned thread.
  *
  *  On Linux, we can advise the scheduler on the importance of certain execution threads.
  *  For that we need to know the thread IDs - `pid_t`, which is not the same as `pthread_t`,
@@ -1027,6 +1095,7 @@ struct alignas(default_alignment_k) numa_pthread_t {
     std::atomic<pthread_t> handle;
     std::atomic<pid_t> id;
     numa_core_id_t core_id;
+    qos_level_t qos_level;
 };
 
 /**
@@ -1044,11 +1113,14 @@ struct numa_topology {
     using nodes_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<numa_node_t>;
 
   private:
+    static constexpr std::size_t max_huge_page_sizes_k = 32;
+
     numa_node_t *nodes_ {nullptr};
     numa_core_id_t *node_core_ids_ {nullptr}; // ? Unsigned integers in [0, threads_count), grouped by NUMA node
     std::size_t nodes_count_ {0};             // ? Number of NUMA nodes
     std::size_t cores_count_ {0};             // ? Total number of cores in all nodes
     allocator_t allocator_ {};
+    std::array<std::size_t, max_huge_page_sizes_k> huge_page_sizes_ {0}; // ? Huge page sizes in bytes
 
   public:
     constexpr numa_topology() noexcept = default;
@@ -1170,40 +1242,131 @@ struct numa_topology {
 
 using numa_topology_t = numa_topology<>;
 
-/** @brief STL-compatible allocator that puts memory on a fixed NUMA node. */
+/**
+ *  @brief Back-ports the C++ 23 `std::allocation_result`.
+ *  @see https://en.cppreference.com/w/cpp/memory/allocator/allocate_at_least
+ */
+template <typename pointer_type_ = char, typename size_type_ = std::size_t>
+struct allocation_result {
+    using pointer_type = pointer_type_;
+    using size_type = size_type_;
+
+    pointer_type ptr {nullptr}; // ? Pointer to the allocated memory, or nullptr if allocation failed
+    size_type count {0};        // ? Number of elements allocated, or 0 if allocation failed
+
+    constexpr allocation_result() noexcept = default;
+    constexpr allocation_result(pointer_type p, size_type s) noexcept : ptr(p), count(s) {}
+    explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
+
+#if defined(__cpp_lib_allocate_at_least)
+    operator std::allocation_result<pointer_type, size_type>() const noexcept {
+        return std::allocation_result<pointer_type, size_type>(ptr, count);
+    }
+#endif
+};
+
+/**
+ *  @brief STL-compatible allocator pinned to a NUMA node, prioritizing Huge Pages.
+ *
+ *  A light-weight, but high-latency BLOB allocator, tied to a specific NUMA node ID.
+ *  Every allocation is a system call to `mmap` and subsequent `mbind`, aligned to at
+ *  least 4 KB page size.
+ *
+ *  @section C++ 23 Functionality
+ *
+ *  Whenever possible, the newer `allocate_at_least` API should be used to reduce the
+ *  number of reallocations.
+ */
 template <typename value_type_ = char>
-struct numa_allocator {
+struct linux_numa_allocator {
     using value_type = value_type_;
-    numa_node_id_t node_id {-1};
+    using size_type = std::size_t;
+    using propagate_on_container_move_assignment = std::true_type;
 
-    constexpr numa_allocator() noexcept = default;
-    explicit constexpr numa_allocator(numa_node_id_t id) noexcept : node_id(id) {}
+    numa_node_id_t node_id {-1};  // ? Unique NUMA node ID, in [0, numa_max_node())
+    size_type bytes_per_page {0}; // ? NUMA or Huge Page size in bytes, typically 4 KB, 2 MB, or 1 GB
+
+    constexpr linux_numa_allocator() noexcept = default;
+    explicit constexpr linux_numa_allocator(numa_node_id_t id, size_type paging = 0) noexcept
+        : node_id(id), bytes_per_page(paging) {}
 
     template <typename other_type_>
-    constexpr numa_allocator(numa_allocator<other_type_> const &o) noexcept : node_id(o.node_id) {}
+    constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
+        : node_id(o.node_id), bytes_per_page(o.bytes_per_page) {}
 
-    value_type *allocate(std::size_t n) noexcept {
-        return static_cast<value_type *>(numa_alloc_onnode(n * sizeof(value_type), node_id));
+    /**
+     *  @brief Allocates memory for at least `size` elements of `value_type`.
+     *  @param[in] size The number of elements to allocate.
+     *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
+     *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
+     */
+    allocation_result<value_type *, size_type> allocate_at_least(size_type size) noexcept {
+        size_type const size_bytes = size * sizeof(value_type);
+        size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
+        size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
+
+        // Check if the new size is actually perfectly divisible by the `sizeof(value_type)`
+        if (aligned_size_bytes % sizeof(value_type)) return {}; // ! Not a size multiple
+
+        size_type const aligned_size = aligned_size_bytes / sizeof(value_type);
+        value_type *result_ptr = allocate(aligned_size);
+        if (!result_ptr) return {}; // ! Allocation failed
+        return {result_ptr, aligned_size};
     }
-    void deallocate(value_type *p, std::size_t n) noexcept { numa_free(p, n * sizeof(value_type)); }
+
+    value_type *allocate(size_type n) noexcept {
+        size_type const size_bytes = size * sizeof(value_type);
+        size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
+        size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
+
+        // In simple cases, just redirect to `numa_alloc_onnode`
+        if (page_size_bytes == ::numa_pagesize())
+            return static_cast<value_type *>(::numa_alloc_onnode(aligned_size_bytes, node_id));
+
+        // Make sure the page size makes sense for Linux
+        int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
+        else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB; }
+        else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_1GB; }
+        else { return nullptr; } // ! Unsupported page size
+
+        // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
+        void *result_ptr = ::mmap(nullptr, aligned_size_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+        if (result_ptr == MAP_FAILED) return nullptr; // ! Allocation failed
+
+        // Pin the memory - that may require an extra allocation for `node_mask` on some systems
+        ::nodemask_t node_mask;
+        ::bitmask node_mask_as_bitset;
+        node_mask_as_bitset.size = sizeof(node_mask) * 8;
+        node_mask_as_bitset.maskp = &node_mask.n;
+        numa_bitmask_setbit(&node_mask_as_bitset, node_id);
+        long binding_status = ::mbind(      //
+            result_ptr, aligned_size_bytes, //
+            MPOL_BIND, &node_mask, sizeof(node_mask) * 8 - 1, MPOL_F_STATIC_NODES);
+        if (binding_status < 0) return nullptr; // ! Binding failed
+
+        return static_cast<value_type *>(result_ptr);
+    }
+
+    void deallocate(value_type *p, size_type n) noexcept { numa_free(p, n * sizeof(value_type)); }
 
     template <typename other_type_>
-    bool operator==(numa_allocator<other_type_> const &o) const noexcept {
-        return node_id == o.node_id;
+    bool operator==(linux_numa_allocator<other_type_> const &o) const noexcept {
+        return node_id == o.node_id && bytes_per_page == o.bytes_per_page;
     }
 
     template <typename other_type_>
-    bool operator!=(numa_allocator<other_type_> const &o) const noexcept {
-        return node_id != o.node_id;
+    bool operator!=(linux_numa_allocator<other_type_> const &o) const noexcept {
+        return node_id != o.node_id || bytes_per_page != o.bytes_per_page;
     }
 };
 
-using numa_allocator_t = numa_allocator<>;
+using linux_numa_allocator_t = linux_numa_allocator<>;
 
 /**
- *  @brief A thread-pool addressing all of the threads on a certain NUMA node.
+ *  @brief A Linux-only thread-pool pinned to one NUMA node and same QoS level physical cores.
  *
- *  Differs from the `thread_pool` template in the following ways:
+ *  Differs from the `basic_pool` template in the following ways:
  *  - constructor API: receives a name for the threads.
  *  - implementation & API of `try_spawn`: uses POSIX APIs to allocate, name, & pin threads.
  *  - worker loop: using Linux-specific napping mechanism to reduce power consumption.
@@ -1216,15 +1379,15 @@ using numa_allocator_t = numa_allocator<>;
  *    for that: `numactl --cpunodebind=2 --membind=2 your_program`
  *
  *  How to best leverage this thread-pool?
- *  - use in conjunction with @b `numa_allocator` to pin memory to the same NUMA node.
+ *  - use in conjunction with @b `linux_numa_allocator` to pin memory to the same NUMA node.
  *  - make sure the Linux kernel is built with @b `CONFIG_SCHED_IDLE` support.
  *  - avoid recreating the @b `numa_topology`, as it's expensive to harvest.
  */
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
-struct colocated_thread_pool {
+struct colocated_linux_pool {
 
   public:
-    using allocator_t = numa_allocator_t;
+    using allocator_t = linux_numa_allocator_t;
     using micro_yield_t = micro_yield_type_;
     static_assert(std::is_nothrow_invocable_r<void, micro_yield_t>::value,
                   "Yield must be callable w/out arguments & return void");
@@ -1271,18 +1434,18 @@ struct colocated_thread_pool {
     alignas(alignment_) std::atomic<epoch_index_t> epoch_ {0};
 
   public:
-    colocated_thread_pool(colocated_thread_pool &&) = delete;
-    colocated_thread_pool(colocated_thread_pool const &) = delete;
-    colocated_thread_pool &operator=(colocated_thread_pool &&) = delete;
-    colocated_thread_pool &operator=(colocated_thread_pool const &) = delete;
+    colocated_linux_pool(colocated_linux_pool &&) = delete;
+    colocated_linux_pool(colocated_linux_pool const &) = delete;
+    colocated_linux_pool &operator=(colocated_linux_pool &&) = delete;
+    colocated_linux_pool &operator=(colocated_linux_pool const &) = delete;
 
-    explicit colocated_thread_pool(char const *name = "fork_union") noexcept {
+    explicit colocated_linux_pool(char const *name = "fork_union") noexcept {
         assert(name && "Thread name must not be null");
         if (std::strlen(name_) == 0) { std::strncpy(name_, "fork_union", sizeof(name_) - 1); } // ? Default name
         else { std::strncpy(name_, name, sizeof(name_) - 1), name_[sizeof(name_) - 1] = '\0'; }
     }
 
-    ~colocated_thread_pool() noexcept { terminate(); }
+    ~colocated_linux_pool() noexcept { terminate(); }
 
     /**
      *  @brief Returns the number of threads in the thread-pool, including the main thread.
@@ -1302,7 +1465,7 @@ struct colocated_thread_pool {
      *  @note This API is @b not synchronized.
      */
     std::size_t memory_usage() const noexcept {
-        return sizeof(colocated_thread_pool) + threads_count() * sizeof(numa_pthread_t);
+        return sizeof(colocated_linux_pool) + threads_count() * sizeof(numa_pthread_t);
     }
 
     /** @brief Checks if the thread-pool's core synchronization points are lock-free. */
@@ -1349,7 +1512,7 @@ struct colocated_thread_pool {
         if (pthreads_count_ != 0) return false; // ! Already initialized
 
         // Allocate the thread pool of `numa_pthread_t` objects
-        allocator_ = numa_allocator_t {node.node_id};
+        allocator_ = linux_numa_allocator_t {node.node_id};
         numa_pthread_allocator_t pthread_allocator {allocator_};
         numa_pthread_t *const pthreads = pthread_allocator.allocate(threads);
         if (!pthreads) {
@@ -1384,7 +1547,7 @@ struct colocated_thread_pool {
             pthreads_[0].id.store(::gettid(), std::memory_order_release);
         }
 
-        // The startup sequence for the POSIX threads differs from the `thread_pool`,
+        // The startup sequence for the POSIX threads differs from the `basic_pool`,
         // where at start up there is a race condition to read the `pthreads_`.
         // So we mark the threads as "chilling" until the
         mood_.store(mood_t::chill_k, std::memory_order_release);
@@ -1477,8 +1640,8 @@ struct colocated_thread_pool {
      *  @sa For advanced resource management, consider `unsafe_broadcast` and `unsafe_join`.
      */
     template <typename function_type_>
-    broadcast_join<colocated_thread_pool, function_type_> for_threads(function_type_ &&function) noexcept {
-        broadcast_join<colocated_thread_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
+    broadcast_join<colocated_linux_pool, function_type_> for_threads(function_type_ &&function) noexcept {
+        broadcast_join<colocated_linux_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
         unsafe_for_threads(joiner.function());
         return joiner;
     }
@@ -1649,7 +1812,7 @@ struct colocated_thread_pool {
     }
 
     static void *_posix_worker_loop(void *arg) noexcept {
-        colocated_thread_pool *pool = static_cast<colocated_thread_pool *>(arg);
+        colocated_linux_pool *pool = static_cast<colocated_linux_pool *>(arg);
 
         // Following section untile the main `while` loop may introduce race conditions,
         // so spin-loop for a bit until the pool is ready.
@@ -1736,11 +1899,11 @@ struct colocated_thread_pool {
 };
 
 /**
- *  @brief A thread-pool addressing all "thread islands" and NUMA nodes.
+ *  @brief A Linux-only thread-pool addressing all colocated "thread islands", NUMA nodes, and QoS levels.
  *
- *  Differs from the `thread_pool` template in the following ways:
+ *  Differs from the `basic_pool` template in the following ways:
  *  - constructor API: receives the NUMA nodes topology, & a name for threads.
- *  - implementation of `try_spawn`: redirects to individual `colocated_thread_pool` instances.
+ *  - implementation of `try_spawn`: redirects to individual `colocated_linux_pool` instances.
  *
  *  Many of the parallel ops benefit from having some minimal amount of @b "scratch-space" that
  *  can be used as an output buffer for partial results, before they can be aggregated from the
@@ -1749,20 +1912,18 @@ struct colocated_thread_pool {
  *
  *  This thread-pool doesn't (yet) provide "reductions" or other reach operations, but uses a
  *  small pool of NUMA-local memory to dampen the cost of `for_n_dynamic` scheduling.
- *
- *
  */
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
-struct numa_thread_pool {
+struct linux_pool {
 
-    using colocated_thread_pool_t = colocated_thread_pool<micro_yield_type_, alignment_>;
+    using colocated_linux_pool_t = colocated_linux_pool<micro_yield_type_, alignment_>;
     using numa_topology_t = numa_topology<>;
 
-    using allocator_t = numa_allocator_t;
-    using micro_yield_t = typename colocated_thread_pool_t::micro_yield_t;
-    using index_t = typename colocated_thread_pool_t::index_t;
-    using epoch_index_t = typename colocated_thread_pool_t::epoch_index_t;
-    using thread_index_t = typename colocated_thread_pool_t::thread_index_t;
+    using allocator_t = linux_numa_allocator_t;
+    using micro_yield_t = typename colocated_linux_pool_t::micro_yield_t;
+    using index_t = typename colocated_linux_pool_t::index_t;
+    using epoch_index_t = typename colocated_linux_pool_t::epoch_index_t;
+    using thread_index_t = typename colocated_linux_pool_t::thread_index_t;
 
   private:
     numa_topology_t topology_ {};
@@ -1776,26 +1937,26 @@ struct numa_thread_pool {
      *  Moreover, assuming NUMA allocators operate at @b page-granularity, each "local pool" comes with its
      *  own "scratch space" arena, that can be used for temporary allocations.
      */
-    colocated_thread_pool_t **local_pools_ {nullptr}; // ? Array of thread pools for each NUMA node
-    std::size_t local_pools_count_ {0};               // ? Number of NUMA nodes in the topology
+    colocated_linux_pool_t **local_pools_ {nullptr}; // ? Array of thread pools for each NUMA node
+    std::size_t local_pools_count_ {0};              // ? Number of NUMA nodes in the topology
 
     using local_pools_allocator_t =
-        typename std::allocator_traits<allocator_t>::template rebind_alloc<colocated_thread_pool_t *>;
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<colocated_linux_pool_t *>;
 
   public:
-    numa_thread_pool(numa_thread_pool &&) = delete;
-    numa_thread_pool(numa_thread_pool const &) = delete;
-    numa_thread_pool &operator=(numa_thread_pool &&) = delete;
-    numa_thread_pool &operator=(numa_thread_pool const &) = delete;
+    linux_pool(linux_pool &&) = delete;
+    linux_pool(linux_pool const &) = delete;
+    linux_pool &operator=(linux_pool &&) = delete;
+    linux_pool &operator=(linux_pool const &) = delete;
 
-    numa_thread_pool(numa_topology_t topo) noexcept : numa_thread_pool("fork_union", topo) {}
-    numa_thread_pool(char const *name, numa_topology_t topo) noexcept : topology_(topo) {
+    linux_pool(numa_topology_t topo) noexcept : linux_pool("fork_union", topo) {}
+    linux_pool(char const *name, numa_topology_t topo) noexcept : topology_(topo) {
         assert(name && "Thread name must not be null");
         if (std::strlen(name_) == 0) { std::strncpy(name_, "fork_union", sizeof(name_) - 1); } // ? Default name
         else { std::strncpy(name_, name, sizeof(name_) - 1), name_[sizeof(name_) - 1] = '\0'; }
     }
 
-    ~numa_thread_pool() noexcept { terminate(); }
+    ~linux_pool() noexcept { terminate(); }
 
     /**
      *  @brief Returns the number of threads in the thread-pool, including the main thread.
@@ -1818,9 +1979,9 @@ struct numa_thread_pool {
      *  @note This API is @b not synchronized.
      */
     std::size_t memory_usage() const noexcept {
-        std::size_t total_bytes = sizeof(numa_thread_pool);
+        std::size_t total_bytes = sizeof(linux_pool);
         for (std::size_t i = 0; i < local_pools_count_; ++i) {
-            colocated_thread_pool_t *pool = local_pools_[i];
+            colocated_linux_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             total_bytes += pool->memory_usage();
         }
@@ -1842,7 +2003,7 @@ struct numa_thread_pool {
     void terminate() noexcept {
         if (local_pools_ == nullptr) return; // ? Uninitialized
         for (std::size_t i = 0; i < local_pools_count_; ++i) {
-            colocated_thread_pool_t *pool = local_pools_[i];
+            colocated_linux_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             pool->terminate();
         }
@@ -1863,7 +2024,7 @@ struct numa_thread_pool {
     void sleep(std::size_t wake_up_periodicity_micros) noexcept {
         assert(wake_up_periodicity_micros > 0 && "Sleep length must be positive");
         for (std::size_t i = 0; i < local_pools_count_; ++i) {
-            colocated_thread_pool_t *pool = local_pools_[i];
+            colocated_linux_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             pool->sleep(wake_up_periodicity_micros);
         }
@@ -1888,7 +2049,7 @@ struct numa_thread_pool {
         // and pin the caller thread to it as well.
         numa_node_t const &first_node = topology_.node(0);
         numa_node_index_t const first_node_id = first_node.node_id; // ? Typically zero
-        numa_allocator_t allocator {first_node_id};
+        linux_numa_allocator_t allocator {first_node_id};
         local_pools_allocator_t local_pools_allocator {allocator};
         thread_index_t const nodes_count = std::min(topology_.nodes_count(), threads);
         local_pools_ = local_pools_allocator.allocate(nodes_count);
@@ -1899,15 +2060,15 @@ struct numa_thread_pool {
         // Every NUMA pool is allocated separately
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
         thread_index_t const threads_per_node = (threads - use_caller_thread) / nodes_count;
-        colocated_thread_pool_allocator_t numa_allocator {allocator};
-        colocated_thread_pool_t *first_pool = numa_allocator.allocate(1);
+        colocated_linux_pool_allocator_t linux_numa_allocator {allocator};
+        colocated_linux_pool_t *first_pool = linux_numa_allocator.allocate(1);
         first_pool.try_spawn(first_node, threads_per_node, exclusivity);
 
         for (numa_node_index_t numa_index = 1; numa_index < nodes_count; ++numa_index) {
             numa_node_t const &node = topology_.node(numa_index);
             numa_node_id_t const node_id = node.node_id;
-            numa_allocator_t allocator {node_id};
-            colocated_thread_pool_t *pool = allocator.allocate(1);
+            linux_numa_allocator_t allocator {node_id};
+            colocated_linux_pool_t *pool = allocator.allocate(1);
             pool->try_spawn(node, threads_per_node, caller_exclusive_k);
             local_pools_[i] = pool;
         }
@@ -1921,8 +2082,8 @@ struct numa_thread_pool {
      *  @sa For advanced resource management, consider `unsafe_broadcast` and `unsafe_join`.
      */
     template <typename function_type_>
-    broadcast_join<numa_thread_pool, function_type_> for_threads(function_type_ &&function) noexcept {
-        broadcast_join<numa_thread_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
+    broadcast_join<linux_pool, function_type_> for_threads(function_type_ &&function) noexcept {
+        broadcast_join<linux_pool, function_type_> joiner {*this, std::forward<function_type_>(function)};
         unsafe_for_threads(joiner.function());
         return joiner;
     }
@@ -1940,7 +2101,7 @@ struct numa_thread_pool {
 
         // Submit to every thread pool
         for (std::size_t i = use_caller_thread; i < local_pools_count_; ++i) {
-            colocated_thread_pool_t *pool = local_pools_[i];
+            colocated_linux_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             pool->unsafe_for_threads(function);
         }
@@ -1955,7 +2116,7 @@ struct numa_thread_pool {
 
         // Wait for everyone to finish
         for (std::size_t i = use_caller_thread; i < local_pools_count_; ++i) {
-            colocated_thread_pool_t *pool = local_pools_[i];
+            colocated_linux_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             pool->unsafe_join();
         }
@@ -1963,12 +2124,12 @@ struct numa_thread_pool {
     }
 };
 
-using colocated_thread_pool_t = colocated_thread_pool<>;
-using numa_thread_pool_t = numa_thread_pool<>;
+using colocated_linux_pool_t = colocated_linux_pool<>;
+using linux_pool_t = linux_pool<>;
 
-static_assert(is_unsafe_pool<thread_pool_t> && is_unsafe_pool<colocated_thread_pool_t>,
+static_assert(is_unsafe_pool<basic_pool_t> && is_unsafe_pool<colocated_linux_pool_t>,
               "These thread pools must be flexible and support unsafe operations");
-static_assert(is_pool<thread_pool_t> && is_pool<colocated_thread_pool_t> && is_pool<numa_thread_pool_t>,
+static_assert(is_pool<basic_pool_t> && is_pool<colocated_linux_pool_t> && is_pool<linux_pool_t>,
               "These thread pools must be fully compatible with the high-level APIs");
 
 #endif // FU_ENABLE_NUMA
