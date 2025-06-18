@@ -62,11 +62,14 @@ install(
 
 # On Linux, let's check if `libnuma` and `pthreads` are available.
 if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
-    find_package(Threads) # Creates Threads::Threads if found
+
+    # Find POSIX threads library
+    find_package(Threads)
     if (Threads_FOUND)
-        target_link_libraries(fork_union INTERFACE Threads::Threads)
+        target_link_libraries(fork_union INTERFACE)
     endif ()
 
+    # Find NUMA library
     find_library(NUMA_LIBRARY NAMES numa)
     set(NUMA_FOUND FALSE)
     if (NUMA_LIBRARY)
@@ -75,12 +78,30 @@ if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
     else ()
         message(STATUS "libnuma not found – building without NUMA support")
     endif ()
-    if (NUMA_FOUND)
-        target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY})
+
+    # Find HugeTLB support
+    find_path(HUGETLBFS_INCLUDE_DIR hugetlbfs.h)
+    set(HUGETLBFS_NAMES ${HUGETLBFS_NAMES} hugetlbfs)
+    find_library(HUGETLBFS_LIBRARY NAMES ${HUGETLBFS_NAMES})
+    include(FindPackageHandleStandardArgs)
+    find_package_handle_standard_args(HugeTLBFS DEFAULT_MSG HUGETLBFS_LIBRARY HUGETLBFS_INCLUDE_DIR)
+    if (HUGETLBFS_FOUND)
+        message(STATUS "HugeTLBFS found: ${HUGETLBFS_LIBRARY}")
+    else ()
+        message(STATUS "HugeTLBFS not found – building without HugeTLB support")
+    endif ()
+
+    # Link to PThreads, libNUMA, and libHugeTLB
+    if (Threads_FOUND
+        AND NUMA_FOUND
+        AND HUGETLBFS_FOUND
+    )
+        target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY} ${HUGETLBFS_LIBRARY} Threads::Threads)
         target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
     else ()
         target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
     endif ()
+
 else () # Non-Linux platforms
     target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
 endif ()

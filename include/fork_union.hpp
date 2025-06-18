@@ -84,9 +84,12 @@
 #endif
 
 #if FU_ENABLE_NUMA
-#include <numa.h>    // `numa_available`, `numa_node_of_cpu`, `numa_alloc_onnode`
-#include <pthread.h> // `pthread_getaffinity_np`
-#include <unistd.h>  // `gettid`
+#include <numa.h>      // `numa_available`, `numa_node_of_cpu`, `numa_alloc_onnode`
+#include <numaif.h>    // `mbind` manual assignment of `mmap` pages
+#include <pthread.h>   // `pthread_getaffinity_np`
+#include <unistd.h>    // `gettid`
+#include <hugetlbfs.h> // `gethugepagesizes`
+#include <sys/mman.h>  // `mmap`, `MAP_PRIVATE`, `MAP_ANONYMOUS`
 #endif
 
 /**
