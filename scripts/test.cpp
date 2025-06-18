@@ -16,8 +16,11 @@ template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t,
 template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
 template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
 template class fu::basic_pool<>;
-template class fu::colocated_linux_pool<>;
+
+#if FU_ENABLE_NUMA
+template class fu::linux_colocated_pool<>;
 template class fu::linux_pool<>;
+#endif
 
 constexpr std::size_t default_parts = 10000; // 10K
 
@@ -31,9 +34,13 @@ struct make_pool_t {
 #if FU_ENABLE_NUMA
 static fu::ram_page_settings_t ram_settings;
 static fu::numa_topology_t numa_topology;
+struct make_linux_colocated_pool_t {
+    fu::linux_colocated_pool_t construct() const noexcept { return fu::linux_colocated_pool_t("fork_union"); }
+    fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
+};
 struct make_linux_pool_t {
     fu::linux_pool_t construct() const noexcept { return fu::linux_pool_t("fork_union"); }
-    fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
+    std::size_t scope(std::size_t = 0) const noexcept { return numa_topology.threads_count(); }
 };
 #endif
 
@@ -143,8 +150,8 @@ static bool test_uncomfortable_input_size() noexcept {
     std::size_t const max_input_size = pool.threads_count() * 3; // Arbitrary size, larger than the number of threads
     for (std::size_t input_size = 0; input_size <= max_input_size; ++input_size) {
         std::atomic<bool> out_of_bounds(false);
-        for_n(pool, input_size, [&](std::size_t const task_index) noexcept {
-            if (task_index >= input_size) out_of_bounds.store(true, std::memory_order_relaxed);
+        pool.for_n(input_size, [&](std::size_t const task) noexcept {
+            if (task >= input_size) out_of_bounds.store(true, std::memory_order_relaxed);
         });
         if (out_of_bounds.load(std::memory_order_relaxed)) return false;
     }
@@ -154,11 +161,11 @@ static bool test_uncomfortable_input_size() noexcept {
 
 /** @brief Convenience structure to ensure we output match locations to independent cache lines. */
 struct alignas(fu::default_alignment_k) aligned_visit_t {
-    std::size_t task_index = 0;
-    bool operator<(aligned_visit_t const &other) const noexcept { return task_index < other.task_index; }
-    bool operator==(aligned_visit_t const &other) const noexcept { return task_index == other.task_index; }
-    bool operator!=(std::size_t other_index) const noexcept { return task_index != other_index; }
-    bool operator==(std::size_t other_index) const noexcept { return task_index == other_index; }
+    std::size_t task = 0;
+    bool operator<(aligned_visit_t const &other) const noexcept { return task < other.task; }
+    bool operator==(aligned_visit_t const &other) const noexcept { return task == other.task; }
+    bool operator!=(std::size_t other_index) const noexcept { return task != other_index; }
+    bool operator==(std::size_t other_index) const noexcept { return task == other_index; }
 };
 
 bool contains_iota(std::vector<aligned_visit_t> &visited) noexcept {
@@ -183,10 +190,10 @@ static bool test_for_n() noexcept {
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope())) return false;
 
-    for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
@@ -195,10 +202,10 @@ static bool test_for_n() noexcept {
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     return counter.load() == default_parts && contains_iota(visited);
@@ -214,10 +221,10 @@ static bool test_for_n_dynamic() noexcept {
 
     std::vector<aligned_visit_t> visited(default_parts);
     std::atomic<std::size_t> counter(0);
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
@@ -226,10 +233,10 @@ static bool test_for_n_dynamic() noexcept {
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     return counter.load() == default_parts && contains_iota(visited);
@@ -247,13 +254,13 @@ static bool test_oversubscribed_threads() noexcept {
     std::vector<aligned_visit_t> visited(default_parts);
     std::atomic<std::size_t> counter(0);
     thread_local volatile std::size_t some_local_work = 0;
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
         // Perform some weird amount of work, that is not very different between consecutive tasks.
-        for (std::size_t i = 0; i != task_index % oversubscription; ++i) some_local_work = some_local_work + i * i;
+        for (std::size_t i = 0; i != task % oversubscription; ++i) some_local_work = some_local_work + i * i;
 
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
@@ -271,10 +278,10 @@ static bool test_mixed_restart() noexcept {
     std::vector<aligned_visit_t> visited(default_parts);
     std::atomic<std::size_t> counter(0);
 
-    fu::for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
     if (counter.load() != default_parts) return false;
     if (!contains_iota(visited)) return false;
@@ -287,10 +294,10 @@ static bool test_mixed_restart() noexcept {
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    fu::for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
     return counter.load() == default_parts && contains_iota(visited);
@@ -312,20 +319,20 @@ static bool stress_test_composite(std::size_t const threads_count, std::size_t c
     // Make sure that no overflow happens in the static scheduling
     std::atomic<std::size_t> counter(0);
     std::vector<aligned_visit_t> visited(default_parts);
-    fu::for_n(pool, default_parts, [&](prong_t prong) noexcept {
+    pool.for_n(default_parts, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = prong.task_index;
+        visited[count_populated].task = prong.task;
     });
     if (counter.load() != default_parts) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that no overflow happens in the dynamic scheduling
     counter = 0;
-    fu::for_n_dynamic(pool, default_parts, [&](prong_t prong) noexcept {
+    pool.for_n_dynamic(default_parts, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = prong.task_index;
+        visited[count_populated].task = prong.task;
     });
     if (counter.load() != default_parts) return false;
     if (!contains_iota(visited)) return false;
@@ -386,15 +393,15 @@ int main(void) {
         {"`terminate` avoided", test_mixed_restart<false>},                      //
         {"`terminate` and re-spawn", test_mixed_restart<true>},                  //
 #if FU_ENABLE_NUMA
-        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_pool_t>},
-        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_pool_t>},
-        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_pool_t>},
-        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_pool_t>},
-        {"NUMA `for_n` static scheduling", test_for_n<make_linux_pool_t>},
-        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_pool_t>},
-        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_pool_t>},
-        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_pool_t>},
-        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_pool_t>},
+        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_colocated_pool_t>},
+        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_colocated_pool_t>},
+        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_colocated_pool_t>},
+        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_colocated_pool_t>},
+        {"NUMA `for_n` static scheduling", test_for_n<make_linux_colocated_pool_t>},
+        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_colocated_pool_t>},
+        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_colocated_pool_t>},
+        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_colocated_pool_t>},
+        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_colocated_pool_t>},
 #endif // FU_ENABLE_NUMA
     };
 
