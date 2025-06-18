@@ -611,13 +611,16 @@ class basic_pool {
             may_be_chilling, mood_t::grind_k, //
             std::memory_order_relaxed, std::memory_order_relaxed);
         epoch_.fetch_add(1, std::memory_order_release); // ? Wake up sleepers
-
-        // Execute on the current "main" thread
-        if (use_caller_thread) function(static_cast<thread_index_t>(0));
     }
 
     /** @brief Blocks the calling thread until the currently broadcasted task finishes. */
     void unsafe_join() noexcept {
+        caller_exclusivity_t const exclusivity = caller_exclusivity();
+        bool const use_caller_thread = exclusivity == caller_inclusive_k;
+
+        // Execute on the current "main" thread
+        if (use_caller_thread) fork_trampoline_(fork_state_, static_cast<thread_index_t>(0));
+
         micro_yield_t micro_yield;
         while (threads_to_sync_.load(std::memory_order_acquire)) micro_yield();
     }
