@@ -104,7 +104,7 @@ static bool test_exclusivity() noexcept {
         for (std::size_t iteration = 0; iteration < 3; ++iteration) {
             auto join_second = second_pool.for_threads(do_second);
             first_pool.for_threads(do_first);
-            join_second.wait();
+            join_second.join();
 
             // Validate:
             for (std::size_t i = 0; i < total_size; ++i)
@@ -130,7 +130,7 @@ static bool test_exclusivity() noexcept {
         first_pool.for_threads([&](std::size_t const thread_index) noexcept {
             visited[thread_index].store(true, std::memory_order_relaxed);
         });
-        join_second.wait();
+        join_second.join();
 
         // Validate:
         for (std::size_t i = 0; i < total_size; ++i)

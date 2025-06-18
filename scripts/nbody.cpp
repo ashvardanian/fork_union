@@ -154,6 +154,7 @@ void iteration_fork_union_dynamic(fu::basic_pool_t &pool, body_t *_FU_RESTRICT b
     pool.for_n_dynamic(n, [=](std::size_t i) noexcept { apply_force(bodies[i], forces[i]); });
 }
 
+#if FU_ENABLE_NUMA
 using linux_numa_bodies_allocator_t = fu::linux_numa_allocator<body_t>;
 using linux_numa_bodies_t = std::vector<body_t, linux_numa_bodies_allocator_t>;
 
@@ -241,6 +242,8 @@ void iteration_fork_union_numa_dynamic(fu::linux_pool_t &pool, body_t *_FU_RESTR
     });
     pool.for_n_dynamic(n, [=](std::size_t i) noexcept { apply_force(bodies[i], forces[i]); });
 }
+
+#endif // FU_ENABLE_NUMA
 
 #pragma endregion - Backends
 

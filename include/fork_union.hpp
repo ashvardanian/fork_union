@@ -216,19 +216,23 @@ struct broadcast_join {
     bool did_broadcast_ {false}; // ? Both
 
   public:
-    explicit broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::move(f)) {}
-    ~broadcast_join() noexcept {
-        broadcast();
-        join();
-    }
-    void broadcast() noexcept {
-        if (did_broadcast_) return; // ? No need to broadcast again
-        pool_ref_.unsafe_broadcast(fork_);
-        did_broadcast_ = true;
-    }
-    void join() const noexcept { pool_ref_.unsafe_join(); }
+    broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::forward<fork_t>(f)) {}
     fork_t &fork_ref() noexcept { return fork_; }
 
+    void broadcast() noexcept {
+        if (did_broadcast_) return; // ? No need to broadcast again
+        pool_ref_.unsafe_for_threads(fork_);
+        did_broadcast_ = true;
+    }
+    void join() noexcept {
+        if (!did_broadcast_) {
+            pool_ref_.unsafe_for_threads(fork_);
+            did_broadcast_ = true;
+        }
+        pool_ref_.unsafe_join();
+    }
+
+    ~broadcast_join() noexcept { join(); }
     broadcast_join(broadcast_join &&) = default;
     broadcast_join(broadcast_join const &) = delete;
     broadcast_join &operator=(broadcast_join &&) = default;
@@ -372,7 +376,8 @@ struct invoke_for_slices {
     fork_type_ fork;
     indexed_split<index_type_> split;
 
-    invoke_for_slices(fork_type_ f, index_type_ n, index_type_ threads) noexcept : fork(f), split(n, threads) {}
+    invoke_for_slices(fork_type_ f, index_type_ n, index_type_ threads) noexcept
+        : fork(std::move(f)), split(n, threads) {}
     void operator()(index_type_ const thread) const noexcept {
         indexed_range<index_type_> const range = split[thread];
         if (range.count == 0) return; // ? No work for this thread
@@ -386,7 +391,8 @@ struct invoke_for_n {
     fork_type_ fork;
     indexed_split<index_type_> split;
 
-    invoke_for_n(fork_type_ f, index_type_ n, index_type_ threads) noexcept : fork(f), split(n, threads) {}
+    invoke_for_n(fork_type_ &&f, index_type_ n, index_type_ threads) noexcept
+        : fork(std::forward<fork_type_>(f)), split(n, threads) {}
     void operator()(index_type_ const thread) const noexcept {
         indexed_range<index_type_> const range = split[thread];
         for (index_type_ i = 0; i < range.count; ++i)
@@ -410,20 +416,21 @@ struct invoke_for_n_dynamic {
     index_type_ n {0}, n_dynamic {0};
     fork_type_ fork {};
 
-    invoke_for_n_dynamic(fork_type_ f, index_type_ n, index_type_ threads) noexcept
-        : progress(0), n(n), n_dynamic(n > threads ? n - threads : 0), fork(f) {
+    invoke_for_n_dynamic(fork_type_ &&f, index_type_ n, index_type_ threads) noexcept
+        : progress(0), n(n), n_dynamic(n > threads ? n - threads : 0), fork(std::forward<fork_type_>(f)) {
         assert((n_dynamic + threads) >= n_dynamic && "Overflow detected");
     }
 
     invoke_for_n_dynamic(invoke_for_n_dynamic &&other) noexcept // ? Need to manually define the `move` due to atomics
-        : progress(other.progress.load()), n(other.n), n_dynamic(other.n_dynamic), fork(std::move(other.fork)) {
+        : progress(0), n(other.n), n_dynamic(other.n_dynamic), fork(std::move(other.fork)) {
         other.n = 0, other.n_dynamic = 0;
+        assert(other.progress.load() == 0 && "Moving an in-progress fork is not allowed");
     }
 
     void operator()(index_type_ const thread) noexcept {
         // Run (up to) one static prong on the current thread
         index_type_ const one_static_prong_index = static_cast<index_type_>(n_dynamic + thread);
-        prong<index_type_> prong(thread, one_static_prong_index);
+        prong<index_type_> prong(one_static_prong_index, thread);
         if (one_static_prong_index < n) fork(prong);
 
         // The rest can be synchronized with a trivial atomic counter
@@ -678,7 +685,7 @@ class basic_pool {
      *  @param[in] fork The callback object, receiving the thread index as an argument.
      *  @return `broadcast_join` synchronization point that waits in the destructor.
      *  @note Even in the `caller_exclusive_k` mode, can be called from just one thread!
-     *  @sa For advanced resource management, consider `unsafe_broadcast` and `unsafe_join`.
+     *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
     broadcast_join<basic_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
