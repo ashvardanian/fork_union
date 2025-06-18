@@ -352,6 +352,38 @@ struct indexed_split {
 
 using indexed_split_t = indexed_split<>;
 
+template <typename function_type_, typename index_type_ = std::size_t>
+constexpr bool can_be_for_task_callback() noexcept {
+    using function_t = function_type_;
+    using index_t = index_type_;
+#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+    return std::is_nothrow_invocable_r_v<void, function_t, index_t> ||
+           std::is_nothrow_invocable_r_v<void, function_t, index_t>;
+#else
+    return true;
+#endif
+}
+
+template <typename function_type_, typename index_type_ = std::size_t>
+constexpr bool can_be_for_slice_callback() noexcept {
+    using function_t = function_type_;
+    using index_t = index_type_;
+#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+    return std::is_nothrow_invocable_r_v<void, function_t, prong<index_t>, index_t> ||
+           std::is_nothrow_invocable_r_v<void, function_t, index_t, index_t>;
+#else
+    return true;
+#endif
+}
+
+#if _FU_DETECT_CPP_20 && defined(__cpp_concepts)
+#define _FU_DETECT_CONCEPTS 1
+#define _FU_REQUIRES(condition) requires(condition)
+#else
+#define _FU_DETECT_CONCEPTS 0
+#define _FU_REQUIRES(condition)
+#endif // _FU_DETECT_CPP_20
+
 #pragma endregion - Helpers and Constants
 
 #pragma region - Basic Pool
@@ -701,11 +733,7 @@ class basic_pool {
      *  @param[in] function The callback, receiving @b `prong_t` or an unsigned integer and the slice length.
      */
     template <typename function_type_ = dummy_lambda_t>
-#if _FU_DETECT_CPP_20
-        requires( // ? The callback must be invocable with a `prong_t` or a `index_t` argument and an unsigned counter
-            std::is_nothrow_invocable_r_v<void, function_type_, prong_t, index_t> ||
-            std::is_nothrow_invocable_r_v<void, function_type_, index_t, index_t>)
-#endif
+    _FU_REQUIRES((can_be_for_slice_callback<function_type_, index_t>()))
     auto for_slices(index_t const n, function_type_ &&function) noexcept {
 
         thread_index_t const threads = threads_count();
@@ -728,6 +756,7 @@ class basic_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename function_type_ = dummy_lambda_t>
+    _FU_REQUIRES((can_be_for_task_callback<function_type_, index_t>()))
     auto for_n(index_t const n, function_type_ &&function) noexcept {
         return for_slices(pool, n, [function](prong_t const start_prong, index_t const count_prongs) noexcept {
             for (index_t i = 0; i < count_prongs; ++i)
@@ -742,11 +771,7 @@ class basic_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename function_type_ = dummy_lambda_t>
-#if _FU_DETECT_CPP_20
-        requires( // ? The callback must be invocable with a `prong_t` or a `index_t` argument
-            std::is_nothrow_invocable_r_v<void, function_type_, prong_t> ||
-            std::is_nothrow_invocable_r_v<void, function_type_, index_t>)
-#endif
+    _FU_REQUIRES((can_be_for_task_callback<function_type_, index_t>()))
     auto for_n_dynamic(index_t const n, function_type_ &&function) noexcept {
 
         // If we run a default for-loop at 1 Billion times per second on a 64-bit machine, then every 585 years
@@ -873,7 +898,7 @@ class basic_pool {
 using basic_pool_t = basic_pool<>;
 
 #pragma region Concepts
-#if _FU_DETECT_CPP_20
+#if _FU_DETECT_CONCEPTS
 
 struct broadcasted_noop_t {
     template <typename index_type_>
@@ -900,8 +925,9 @@ concept is_unsafe_pool =   //
         { p.unsafe_join() } -> std::same_as<void>;
     };
 
-#endif
+#endif // _FU_DETECT_CONCEPTS
 #pragma endregion Concepts
+
 #pragma endregion - Basic Pool
 
 #pragma region - Hardware Friendly Yield
@@ -2182,7 +2208,28 @@ struct linux_pool {
             linux_colocated_pool_t *pool = local_pools_[i];
             assert(pool && "NUMA thread pool must not be null");
             pool->terminate();
+
+            // Deallocate the local pool
+            numa_node_t const &node = topology_.node(i);
+            numa_node_id_t const node_id = node.node_id;
+            local_pool_allocator_t allocator {node_id};
+            allocator.deallocate(pool, 1); // ? Reclaim the memory
+            local_pools_[i] = nullptr;     // ? Clear the pointer
         }
+
+        // Deallocate the local pools
+        numa_node_t const &first_node = topology_.node(0);
+        numa_node_id_t const first_node_id = first_node.node_id; // ? Typically zero
+        local_pools_allocator_t local_pools_allocator {first_node_id};
+        local_pools_allocator.deallocate(local_pools_, local_pools_count_);
+
+        local_pools_ = nullptr;
+        local_pools_count_ = 0;
+        threads_count_ = 0;
+        exclusivity_ = caller_inclusive_k;
+        sleep_length_micros_ = 0;
+        _reset_fork();
+        _reset_affinity();
     }
 
     /**
