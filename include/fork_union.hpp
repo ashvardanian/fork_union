@@ -62,6 +62,7 @@
 #include <cstring> // `std::strlen`
 #include <utility> // `std::exchange`, `std::addressof`
 #include <new>     // `std::hardware_destructive_interference_size`
+#include <array>   // `std::array`
 
 #define FORK_UNION_VERSION_MAJOR 1
 #define FORK_UNION_VERSION_MINOR 0
@@ -213,15 +214,25 @@ struct broadcast_join {
     fork_t fork_; // ? We need this to extend the lifetime of the lambda object
 
   public:
-    explicit broadcast_join(basic_pool_t &pool, fork_t f) noexcept : pool_ref_(pool_ref), fork_(f) {}
-
-    broadcast_join(broadcast_join &&) = default;
-    broadcast_join(broadcast_join const &) = delete;
-    broadcast_join &operator=(broadcast_join &&) = default;
-    broadcast_join &operator=(broadcast_join const &) = delete;
+    explicit broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::move(f)) {}
     ~broadcast_join() noexcept { wait(); }
     void wait() const noexcept { pool_ref_.unsafe_join(); }
-    fork_t const &fork_cref() const noexcept { return fork_; }
+    fork_t &fork_ref() noexcept { return fork_; }
+
+    /**
+     *  Let's say the returned join handle is propagated up the call stack.
+     *  The `fork_state_` pointer in the thread-pool will be pointing to an invalid
+     *  location. One option to mitigate this is to keep a pointer to `&fork_state_`
+     *  inside this "joiner" and atomically update it in the following move constructors.
+     *
+     *  Still, even if user needs those handles and has multiple pools, by design,
+     *  we want to enforce, that the call-sight for all "broadcasts" is in the same scope!
+     *  That significantly simplifies the design!
+     */
+    broadcast_join(broadcast_join &&) = delete;
+    broadcast_join(broadcast_join const &) = delete;
+    broadcast_join &operator=(broadcast_join &&) = delete;
+    broadcast_join &operator=(broadcast_join const &) = delete;
 };
 
 /**
@@ -251,7 +262,7 @@ struct prong {
                  colocation_index_t colocation = 0) noexcept
         : task(task), thread(thread), memory(memory), colocation(colocation) {}
 
-    inline operator task_index_t() const noexcept { return task_index; }
+    inline operator task_index_t() const noexcept { return task; }
 };
 
 using prong_t = prong<>; // ? Default prong type with `std::size_t` indices
@@ -354,6 +365,76 @@ struct indexed_split {
 };
 
 using indexed_split_t = indexed_split<>;
+
+/** @brief Wraps the metadata needed for `for_slices` APIs for `broadcast_join` compatibility. */
+template <typename fork_type_, typename index_type_>
+struct invoke_for_slices {
+    fork_type_ fork;
+    indexed_split<index_type_> split;
+
+    invoke_for_slices(fork_type_ f, index_type_ n, index_type_ threads) noexcept : fork(f), split(n, threads) {}
+    void operator()(index_type_ const thread) const noexcept {
+        indexed_range<index_type_> const range = split[thread];
+        if (range.count == 0) return; // ? No work for this thread
+        fork(prong<index_type_> {range.first, thread}, range.count);
+    }
+};
+
+/** @brief Wraps the metadata needed for `for_n` APIs for `broadcast_join` compatibility. */
+template <typename fork_type_, typename index_type_>
+struct invoke_for_n {
+    fork_type_ fork;
+    indexed_split<index_type_> split;
+
+    invoke_for_n(fork_type_ f, index_type_ n, index_type_ threads) noexcept : fork(f), split(n, threads) {}
+    void operator()(index_type_ const thread) const noexcept {
+        indexed_range<index_type_> const range = split[thread];
+        for (index_type_ i = 0; i < range.count; ++i)
+            fork(prong<index_type_> {static_cast<index_type_>(range.first + i), thread});
+    }
+};
+
+/**
+ *  @brief Wraps the metadata needed for `for_n_dynamic` APIs for `broadcast_join` compatibility.
+ *
+ *  If we run a default for-loop at 1 Billion times per second on a 64-bit machine, then every 585 years
+ *  of computational time we will wrap around the `std::size_t` capacity for the `prong.task` index.
+ *  In case we `n + thread >= std::size_t(-1)`, a simple condition won't be enough.
+ *  Alternatively, we can make sure, that each thread can do at least one increment of `progress`
+ *  without worrying about the overflow. The way to achieve that is to preprocess the trailing `threads`
+ *  of elements externally, before entering this loop!
+ */
+template <typename fork_type_, typename index_type_, std::size_t alignment_>
+struct invoke_for_n_dynamic {
+    alignas(alignment_) std::atomic<index_type_> progress {0};
+    index_type_ n {0}, n_dynamic {0};
+    fork_type_ fork {};
+
+    invoke_for_n_dynamic(fork_type_ f, index_type_ n, index_type_ threads) noexcept
+        : progress(0), n(n), n_dynamic(n > threads ? n - threads : 0), fork(f) {
+        assert((n_dynamic + threads) >= n_dynamic && "Overflow detected");
+    }
+
+    invoke_for_n_dynamic(invoke_for_n_dynamic &&other) noexcept // ? Need to manually define the `move` due to atomics
+        : progress(other.progress.load()), n(other.n), n_dynamic(other.n_dynamic), fork(std::move(other.fork)) {
+        other.n = 0, other.n_dynamic = 0;
+    }
+
+    void operator()(index_type_ const thread) noexcept {
+        // Run (up to) one static prong on the current thread
+        index_type_ const one_static_prong_index = static_cast<index_type_>(n_dynamic + thread);
+        prong<index_type_> prong(thread, one_static_prong_index);
+        if (one_static_prong_index < n) fork(prong);
+
+        // The rest can be synchronized with a trivial atomic counter
+        while (true) {
+            prong.task = progress.fetch_add(1, std::memory_order_relaxed);
+            bool const beyond_last_prong = prong.task >= n_dynamic;
+            if (beyond_last_prong) break;
+            fork(prong);
+        }
+    }
+};
 
 template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_task_callback() noexcept {
@@ -481,7 +562,7 @@ class basic_pool {
     using colocation_index_t = index_t; // ? A.k.a. "NUMA node ID" in [0, numa_nodes_count)
     using indexed_split_t = indexed_split<index_t>;
 
-    using punned_fork_context_t = void const *;                           // ? Pointer to the on-stack lambda
+    using punned_fork_context_t = void *;                                 // ? Pointer to the on-stack lambda
     using trampoline_t = void (*)(punned_fork_context_t, thread_index_t); // ? Wraps lambda's `operator()`
 
   private:
@@ -602,7 +683,7 @@ class basic_pool {
     template <typename fork_type_>
     broadcast_join<basic_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         broadcast_join<basic_pool, fork_type_> joiner {*this, std::forward<fork_type_>(fork)};
-        unsafe_for_threads(joiner.fork_cref());
+        unsafe_for_threads(joiner.fork_ref());
         return joiner;
     }
 
@@ -613,7 +694,7 @@ class basic_pool {
      */
     template <typename fork_type_>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_threads(fork_type_ const &fork) noexcept {
+    void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();
         assert(threads != 0 && "Thread pool not initialized");
@@ -625,7 +706,7 @@ class basic_pool {
                "The broadcast function can't be called concurrently or recursively");
 
         // Configure "fork" details
-        fork_state_ = std::addressof(function);
+        fork_state_ = std::addressof(fork);
         fork_trampoline_ = &_call_as_lambda<fork_type_>;
         threads_to_sync_.store(threads - use_caller_thread, std::memory_order_relaxed);
 
@@ -723,19 +804,6 @@ class basic_pool {
 
 #pragma region Indexed Task Scheduling
 
-    template <typename fork_type_ = dummy_lambda_t>
-    struct invoke_for_slices {
-        fork_type_ fork;
-        indexed_split_t splits;
-
-        invoke_for_slices(fork_type_ f, indexed_split_t const &s) noexcept : fork(f), splits(s) {}
-        void operator()(thread_index_t const thread) const noexcept {
-            indexed_range_t const range = splits[thread];
-            if (range.count == 0) return; // ? No work for this thread
-            fork(prong_t {range.first, thread}, range.count);
-        }
-    };
-
     /**
      *  @brief Distributes @p `n` similar duration calls between threads in slices, as opposed to individual indices.
      *  @param[in] n The total length of the range to split between threads.
@@ -743,10 +811,13 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
-    broadcast_join<basic_pool, invoke_for_slices<fork_type_>> for_slices(index_t const n, fork_type_ &&fork) noexcept {
-        invoke_for_slices<fork_type_> invoker {std::forward<fork_type_>(fork), indexed_split_t(n, threads_count())};
-        broadcast_join<basic_pool, invoke_for_slices<fork_type_>> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_cref());
+    broadcast_join<basic_pool, invoke_for_slices<fork_type_, index_t>> //
+        for_slices(index_t const n, fork_type_ &&fork) noexcept {
+
+        using invoker_t = invoke_for_slices<fork_type_, index_t>;
+        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
+        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
+        unsafe_for_threads(joiner.fork_ref());
         return joiner;
     }
 
@@ -757,22 +828,10 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
-    void unsafe_for_slices(index_t const n, fork_type_ const &fork) noexcept {
-        invoke_for_slices<fork_type_ const &> invoker {fork, indexed_split_t(n, threads_count())};
+    void unsafe_for_slices(index_t const n, fork_type_ &fork) noexcept {
+        invoke_for_slices<fork_type_ const &, index_t> invoker {fork, n, threads_count()};
         unsafe_for_threads(invoker);
     }
-
-    template <typename fork_type_ = dummy_lambda_t>
-    struct invoke_for_n {
-        fork_type_ fork;
-        indexed_split_t splits;
-
-        invoke_for_n(fork_type_ f, indexed_split_t const &s) noexcept : fork(f), splits(s) {}
-        void operator()(thread_index_t const thread) const noexcept {
-            indexed_range_t const range = splits[thread];
-            for (index_t i = 0; i < range.count; ++i) fork(prong_t {static_cast<index_t>(range.first + i), thread});
-        }
-    };
 
     /**
      *  @brief Distributes @p `n` similar duration calls between threads.
@@ -786,10 +845,13 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    broadcast_join<basic_pool, invoke_for_n<fork_type_>> for_n(index_t const n, fork_type_ &&fork) noexcept {
-        invoke_for_n<fork_type_> invoker {std::forward<fork_type_>(fork), indexed_split_t(n, threads_count())};
-        broadcast_join<basic_pool, invoke_for_n<fork_type_>> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_cref());
+    broadcast_join<basic_pool, invoke_for_n<fork_type_, index_t>> //
+        for_n(index_t const n, fork_type_ &&fork) noexcept {
+
+        using invoker_t = invoke_for_n<fork_type_, index_t>;
+        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
+        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
+        unsafe_for_threads(joiner.fork_ref());
         return joiner;
     }
 
@@ -800,45 +862,10 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n(index_t const n, fork_type_ const &fork) noexcept {
-        invoke_for_n<fork_type_ const &> invoker {fork, indexed_split_t(n, threads_count())};
+    void unsafe_for_n(index_t const n, fork_type_ &fork) noexcept {
+        invoke_for_n<fork_type_ const &, index_t> invoker {fork, n, threads_count()};
         unsafe_for_threads(invoker);
     }
-
-    /**
-     *  If we run a default for-loop at 1 Billion times per second on a 64-bit machine, then every 585 years
-     *  of computational time we will wrap around the `std::size_t` capacity for the `prong.task` index.
-     *  In case we `n + thread >= std::size_t(-1)`, a simple condition won't be enough.
-     *  Alternatively, we can make sure, that each thread can do at least one increment of `progress`
-     *  without worrying about the overflow. The way to achieve that is to preprocess the trailing `threads`
-     *  of elements externally, before entering this loop!
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    struct invoke_for_n_dynamic {
-        alignas(alignment_k) std::atomic<index_t> progress {0};
-        index_t n {0}, n_dynamic {0};
-        fork_type_ fork {};
-
-        invoke_for_n_dynamic(fork_type_ f, index_t n, thread_index_t threads) noexcept
-            : progress(0), n(n), n_dynamic(n > threads ? n - threads : 0), fork(f) {
-            assert((n_dynamic + threads) >= n_dynamic && "Overflow detected");
-        }
-
-        void operator()(thread_index_t const thread) const noexcept {
-            // Run (up to) one static prong on the current thread
-            index_t const one_static_prong_index = static_cast<index_t>(n_dynamic + thread);
-            prong_t prong(thread, one_static_prong_index);
-            if (one_static_prong_index < n) fork(prong);
-
-            // The rest can be synchronized with a trivial atomic counter
-            while (true) {
-                prong.task = progress.fetch_add(1, std::memory_order_relaxed);
-                bool const beyond_last_prong = prong.task >= n_dynamic;
-                if (beyond_last_prong) break;
-                fork(prong);
-            }
-        }
-    };
 
     /**
      *  @brief Executes uneven tasks on all threads, greedying for work.
@@ -848,11 +875,13 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_>> for_n_dynamic(index_t const n,
-                                                                               fork_type_ &&fork) noexcept {
-        invoke_for_n_dynamic<fork_type_> invoker {std::forward<fork_type_>(fork), n, threads_count()};
-        broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_>> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_cref());
+    broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_, index_t, alignment_k>> //
+        for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
+
+        using invoker_t = invoke_for_n_dynamic<fork_type_, index_t, alignment_k>;
+        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
+        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
+        unsafe_for_threads(joiner.fork_ref());
         return joiner;
     }
 
@@ -863,8 +892,8 @@ class basic_pool {
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n_dynamic(index_t const n, fork_type_ const &fork) noexcept {
-        invoke_for_n_dynamic<fork_type_ const &> invoker {fork, n, threads_count()};
+    void unsafe_for_n_dynamic(index_t const n, fork_type_ &fork) noexcept {
+        invoke_for_n_dynamic<fork_type_ const &, index_t, alignment_k> invoker {fork, n, threads_count()};
         unsafe_for_threads(invoker);
     }
 
@@ -884,7 +913,7 @@ class basic_pool {
      */
     thread_index_t threads_count(index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
-        return count_threads();
+        return threads_count();
     }
 
     /**
@@ -912,7 +941,7 @@ class basic_pool {
      */
     template <typename fork_type_>
     static void _call_as_lambda(punned_fork_context_t punned_lambda_pointer, thread_index_t thread_index) noexcept {
-        fork_type_ const &lambda_object = *static_cast<fork_type_ const *>(punned_lambda_pointer);
+        fork_type_ &lambda_object = *static_cast<fork_type_ *>(punned_lambda_pointer);
         lambda_object(thread_index);
     }
 
