@@ -749,34 +749,41 @@ class basic_pool {
 #endif
     auto for_n_dynamic(index_t const n, function_type_ &&function) noexcept {
 
-        // If there are fewer tasks than threads, each thread gets at most 1 task
-        // and that's easier to schedule statically!
-        thread_index_t const threads = threads_count();
-        index_t const n_dynamic = n > threads ? n - threads : 0;
-        assert((n_dynamic + threads) >= n_dynamic && "Overflow detected");
-        alignas(alignment_k) std::atomic<index_t> prongs_progress {0};
-
-        // If we run this loop at 1 Billion times per second on a 64-bit machine, then every 585 years
-        // of computational time we will wrap around the `std::size_t` capacity for the `new_prong_index`.
+        // If we run a default for-loop at 1 Billion times per second on a 64-bit machine, then every 585 years
+        // of computational time we will wrap around the `std::size_t` capacity for the `prong.task` index.
         // In case we `n + thread >= std::size_t(-1)`, a simple condition won't be enough.
         // Alternatively, we can make sure, that each thread can do at least one increment of `prongs_progress`
         // without worrying about the overflow. The way to achieve that is to preprocess the trailing `threads`
         // of elements externally, before entering this loop!
-        return for_threads([n, n_dynamic, function,
-                            prongs_progress = std::move(prongs_progress)](thread_index_t const thread) noexcept {
-            // Run (up to) one static prong on the current thread
-            index_t const one_static_prong_index = static_cast<index_t>(n_dynamic + thread);
-            prong_t prong(thread, one_static_prong_index);
-            if (one_static_prong_index < n) function(prong);
+        struct dynamically_scheduled_t {
+            alignas(alignment_k) std::atomic<index_t> prongs_progress {0};
+            index_t n {0}, n_dynamic {0};
+            function_type_ function {};
 
-            // The rest can be synchronized with a trivial atomic counter
-            while (true) {
-                prong.task = prongs_progress.fetch_add(1, std::memory_order_relaxed);
-                bool const beyond_last_prong = prong.task >= n_dynamic;
-                if (beyond_last_prong) break;
-                function(prong);
+            explicit dynamically_scheduled_t(index_t n, thread_index_t threads, function_type_ &&function) noexcept
+                : prongs_progress(0), n(n), n_dynamic(n > threads ? n - threads : 0),
+                  function(std::forward<function_type_>(function)) {
+                assert((n_dynamic + threads) >= n_dynamic && "Overflow detected");
             }
-        });
+
+            void operator()(thread_index_t const thread) const noexcept {
+                // Run (up to) one static prong on the current thread
+                index_t const one_static_prong_index = static_cast<index_t>(n_dynamic + thread);
+                prong_t prong(thread, one_static_prong_index);
+                if (one_static_prong_index < n) function(prong);
+
+                // The rest can be synchronized with a trivial atomic counter
+                while (true) {
+                    prong.task = prongs_progress.fetch_add(1, std::memory_order_relaxed);
+                    bool const beyond_last_prong = prong.task >= n_dynamic;
+                    if (beyond_last_prong) break;
+                    function(prong);
+                }
+            }
+        };
+
+        thread_index_t const threads = threads_count();
+        return for_threads(dynamically_scheduled_t {n, threads, std::forward<function_type_>(function)});
     }
 
 #pragma endregion Indexed Task Scheduling
