@@ -29,6 +29,7 @@ struct make_pool_t {
 };
 
 #if FU_ENABLE_NUMA
+static fu::ram_page_settings_t ram_settings;
 static fu::numa_topology_t numa_topology;
 struct make_linux_pool_t {
     fu::linux_pool_t construct() const noexcept { return fu::linux_pool_t("fork_union"); }
@@ -335,13 +336,24 @@ static bool stress_test_composite(std::size_t const threads_count, std::size_t c
 
 void log_numa_topology(void) {
 #if FU_ENABLE_NUMA
+    if (!ram_settings.try_harvest()) {
+        std::fprintf(stderr, "Failed to harvest RAM page settings\n");
+        exit(EXIT_FAILURE);
+    }
     if (!numa_topology.try_harvest()) {
         std::fprintf(stderr, "Failed to harvest NUMA topology\n");
         exit(EXIT_FAILURE);
     }
 
-    std::printf("Harvested NUMA topology:\n");
-    std::printf("- %zu nodes, %zu threads\n", numa_topology.nodes_count(), numa_topology.threads_count());
+    std::printf("Harvested topology:\n");
+    std::printf("- %zu huge page sizes:\n", ram_settings.size());
+    for (auto const &setting : ram_settings) {
+        if (setting.size_bytes > 1024 * 1024 * 1024) { std::printf("  - %zu GiB\n", setting.size_bytes >> 30); }
+        else if (setting.size_bytes > 1024 * 1024) { std::printf("  - %zu MiB\n", setting.size_bytes >> 20); }
+        else if (setting.size_bytes > 1024) { std::printf("  - %zu KiB\n", setting.size_bytes >> 10); }
+        else { std::printf("  - %zu B\n", setting.size_bytes); }
+    }
+    std::printf("- %zu NUMA nodes, %zu threads\n", numa_topology.nodes_count(), numa_topology.threads_count());
     for (std::size_t i = 0; i < numa_topology.nodes_count(); ++i) {
         auto const n = numa_topology.node(i);
         std::printf("- node %d : %zu MiB, %zu cores: %d...%d\n",  //
