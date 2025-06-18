@@ -197,11 +197,12 @@ struct standard_yield_t {
 };
 
 /**
- *  @brief A synchronization point that waits for all threads to finish the last broadcasted call.
+ *  @brief A synchronization point that waits for all threads to finish the last fork.
+ *  @note You don't have to explicitly call any of the APIs, it's like `std::jthread` ;)
  *
  *  You don't have to explicitly handle the return value and wait on it.
- *  According to the  C++ standard, the destructor of the `broadcast_join_t` will be called
- *  in the end of the `for_threads`-calling expression.
+ *  According to the  C++ standard, the destructor of the `broadcast_join_t` will
+ *  be called in the end of the `for_threads`-calling expression.
  */
 template <typename basic_pool_type_, typename fork_type_>
 struct broadcast_join {
@@ -211,27 +212,26 @@ struct broadcast_join {
 
   private:
     basic_pool_t &pool_ref_;
-    fork_t fork_; // ? We need this to extend the lifetime of the lambda object
+    fork_t fork_;                // ? We need this to extend the lifetime of the lambda object
+    bool did_broadcast_ {false}; // ? Both
 
   public:
     explicit broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::move(f)) {}
-    ~broadcast_join() noexcept { wait(); }
-    void wait() const noexcept { pool_ref_.unsafe_join(); }
+    ~broadcast_join() noexcept {
+        broadcast();
+        join();
+    }
+    void broadcast() noexcept {
+        if (did_broadcast_) return; // ? No need to broadcast again
+        pool_ref_.unsafe_broadcast(fork_);
+        did_broadcast_ = true;
+    }
+    void join() const noexcept { pool_ref_.unsafe_join(); }
     fork_t &fork_ref() noexcept { return fork_; }
 
-    /**
-     *  Let's say the returned join handle is propagated up the call stack.
-     *  The `fork_state_` pointer in the thread-pool will be pointing to an invalid
-     *  location. One option to mitigate this is to keep a pointer to `&fork_state_`
-     *  inside this "joiner" and atomically update it in the following move constructors.
-     *
-     *  Still, even if user needs those handles and has multiple pools, by design,
-     *  we want to enforce, that the call-sight for all "broadcasts" is in the same scope!
-     *  That significantly simplifies the design!
-     */
-    broadcast_join(broadcast_join &&) = delete;
+    broadcast_join(broadcast_join &&) = default;
     broadcast_join(broadcast_join const &) = delete;
-    broadcast_join &operator=(broadcast_join &&) = delete;
+    broadcast_join &operator=(broadcast_join &&) = default;
     broadcast_join &operator=(broadcast_join const &) = delete;
 };
 
@@ -682,9 +682,7 @@ class basic_pool {
      */
     template <typename fork_type_>
     broadcast_join<basic_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
-        broadcast_join<basic_pool, fork_type_> joiner {*this, std::forward<fork_type_>(fork)};
-        unsafe_for_threads(joiner.fork_ref());
-        return joiner;
+        return {*this, std::forward<fork_type_>(fork)};
     }
 
     /**
@@ -814,11 +812,7 @@ class basic_pool {
     broadcast_join<basic_pool, invoke_for_slices<fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
 
-        using invoker_t = invoke_for_slices<fork_type_, index_t>;
-        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
-        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_ref());
-        return joiner;
+        return {*this, {std::forward<fork_type_>(fork), n, threads_count()}};
     }
 
     /**
@@ -848,11 +842,7 @@ class basic_pool {
     broadcast_join<basic_pool, invoke_for_n<fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
-        using invoker_t = invoke_for_n<fork_type_, index_t>;
-        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
-        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_ref());
-        return joiner;
+        return {*this, {std::forward<fork_type_>(fork), n, threads_count()}};
     }
 
     /**
@@ -878,11 +868,7 @@ class basic_pool {
     broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_, index_t, alignment_k>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
-        using invoker_t = invoke_for_n_dynamic<fork_type_, index_t, alignment_k>;
-        invoker_t invoker {std::forward<fork_type_>(fork), n, threads_count()};
-        broadcast_join<basic_pool, invoker_t> joiner {*this, std::move(invoker)};
-        unsafe_for_threads(joiner.fork_ref());
-        return joiner;
+        return {*this, {std::forward<fork_type_>(fork), n, threads_count()}};
     }
 
     /**
