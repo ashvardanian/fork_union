@@ -453,15 +453,26 @@ int main(void) {
         {"`terminate` avoided", test_mixed_restart<false>},                      //
         {"`terminate` and re-spawn", test_mixed_restart<true>},                  //
 #if FU_ENABLE_NUMA
-        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_colocated_pool_t>},
-        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_colocated_pool_t>},
-        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_colocated_pool_t>},
-        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_colocated_pool_t>},
-        {"NUMA `for_n` static scheduling", test_for_n<make_linux_colocated_pool_t>},
-        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_colocated_pool_t>},
-        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_colocated_pool_t>},
-        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_colocated_pool_t>},
-        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_colocated_pool_t>},
+        // Uniform Memory Access (UMA) tests for threads pinned to the same NUMA node
+        {"UMA `try_spawn` normal", test_try_spawn_success<make_linux_colocated_pool_t>},
+        {"UMA `broadcast` dispatch", test_broadcast<make_linux_colocated_pool_t>},
+        {"UMA `caller_exclusive_k` calls", test_exclusivity<make_linux_colocated_pool_t>},
+        {"UMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_colocated_pool_t>},
+        {"UMA `for_n` static scheduling", test_for_n<make_linux_colocated_pool_t>},
+        {"UMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_colocated_pool_t>},
+        {"UMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_colocated_pool_t>},
+        {"UMA `terminate` avoided", test_mixed_restart<false, make_linux_colocated_pool_t>},
+        {"UMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_colocated_pool_t>},
+        // Non-Uniform Memory Access (NUMA) tests for threads addressing all NUMA nodes
+        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_distributed_pool_t>},
+        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_distributed_pool_t>},
+        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_distributed_pool_t>},
+        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_distributed_pool_t>},
+        {"NUMA `for_n` static scheduling", test_for_n<make_linux_distributed_pool_t>},
+        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_distributed_pool_t>},
+        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_distributed_pool_t>},
+        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_distributed_pool_t>},
+        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_distributed_pool_t>},
 #endif // FU_ENABLE_NUMA
     };
 
