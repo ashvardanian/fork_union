@@ -21,7 +21,7 @@ There is no nested parallelism, exception handling, or "future promises"; they a
 The thread pool itself has a few core operations:
 
 - `try_spawn` to initialize worker threads, and 
-- `broadcast` to launch a blocking callback on all threads.
+- `for_threads` to launch a blocking callback on all threads.
 
 Higher-level APIs for index-addressable tasks are also available:
 
@@ -33,13 +33,13 @@ For additional flow control and tuning, following helpers are available:
 
 - `sleep(microseconds)` - for longer naps,
 - `terminate` - to kill the threads before the destructor is called,
-- `unsafe_broadcast` - to broadcast a callback without blocking,
+- `unsafe_for_threads` - to broadcast a callback without blocking,
 - `unsafe_join` - to block until the completion of the current broadcast.
 
 On Linux, in C++, given the maturity and flexibility of the HPC ecosystem, it provides [NUMA extensions](#non-uniform-memory-access-numa).
-That includes the `colocated_thread_pool` analog of the `thread_pool` and the `numa_allocator` for allocating memory on a specific NUMA node.
+That includes the `linux_colocated_pool` analog of the `basic_pool` and the `linux_numa_allocator` for allocating memory on a specific NUMA node.
 Those are out-of-the-box compatible with the higher-level APIs.
-Most interestingly, for Big Data applications, a higher-level `numa_thread_pool` class will address and balance the work across all NUMA nodes.
+Most interestingly, for Big Data applications, a higher-level `distributed_pool` class will address and balance the work across all NUMA nodes.
 
 ### Intro in Rust
 
@@ -118,14 +118,14 @@ target_link_libraries(your_target PRIVATE fork_union::fork_union)
 Then, include the header in your C++ code:
 
 ```cpp
-#include <fork_union.hpp>   // `thread_pool_t`
+#include <fork_union.hpp>   // `basic_pool_t`
 #include <cstdio>           // `stderr`
 #include <cstdlib>          // `EXIT_SUCCESS`
 
 namespace fu = ashvardanian::fork_union;
 
 int main() {
-    fu::thread_pool_t pool;
+    fu::basic_pool_t pool;
     if (!pool.try_spawn(std::thread::hardware_concurrency())) {
         std::fprintf(stderr, "Failed to fork the threads\n");
         return EXIT_FAILURE;
@@ -242,17 +242,17 @@ That part, in our simple example will be single-threaded:
 ```cpp
 #include <vector> // `std::vector`
 #include <span> // `std::span`
-#include <fork_union.hpp> // `numa_allocator`, `numa_topology_t`, `numa_thread_pool_t`
+#include <fork_union.hpp> // `linux_numa_allocator`, `numa_topology_t`, `linux_distributed_pool_t`
 #include <simsimd/simsimd.h> // `simsimd_f32_cos`, `simsimd_distance_t`
 
 namespace fu = ashvardanian::fork_union;
-using floats_alloc_t = fu::numa_allocator<float>;
+using floats_alloc_t = fu::linux_numa_allocator<float>;
 
 constexpr std::size_t dimensions = 768; /// Matches most BERT-like models
 static std::vector<float, floats_alloc_t> first_half(floats_alloc_t(0));
 static std::vector<float, floats_alloc_t> second_half(floats_alloc_t(1));
 static fu::numa_topology_t numa_topology;
-static fu::numa_thread_pool_t numa_thread_pool;
+static fu::linux_distributed_pool_t distributed_pool;
 
 /// Dynamically shards incoming vectors across 2 nodes in a round-robin fashion.
 void append(std::span<float, dimensions> vector) {
@@ -287,42 +287,48 @@ inline search_result_t pick_best(search_result_t const& a, search_result_t const
 /// Uses all CPU threads to search for the closest vector to the @p query.
 search_result_t search(std::span<float, dimensions> query) {
     
-    bool const need_to_spawn_threads = !numa_thread_pool.count_threads();
+    bool const need_to_spawn_threads = !distributed_pool.count_threads();
     if (need_to_spawn_threads) {
         assert(numa_topology.try_harvest() && "Failed to harvest NUMA topology");
-        assert(numa_thread_pool.try_spawn(numa_topology, sizeof(search_result_t)) && "Failed to spawn NUMA pools");
+        assert(numa_topology.count_nodes() == 2 && "Expected exactly 2 NUMA nodes");
+        assert(distributed_pool.try_spawn(numa_topology, sizeof(search_result_t)) && "Failed to spawn NUMA pools");
     }
     
     search_result_t result;
     fu::spin_mutex_t result_update; // ? Lighter `std::mutex` alternative w/out system calls
-    numa_thread_pool.for_colocated_threads([&](colocated_thread_pool_t &colocated_pool) noexcept {
+    
+    auto concurrent_searcher = [&](auto first_prong, std::size_t count) noexcept {
+        auto [index, _, colocation] = first_prong;
+        auto& vectors = colocation == 0 ? first_half : second_half;
+        search_result_t thread_local_result;
+        for (std::size_t task_index = first_index; task_index < first_index + count; ++task_index) {
+            simsimd_distance_t distance;
+            simsimd_f32_cos(query.data(), vectors.data() + task_index * dimensions, dimensions, &distance);
+            thread_local_result = pick_best(thread_local_result, {distance, task_index});
+        }
         
-        // This code is going to run on every (!) thread of the NUMA node's `colocated_pool`.
-        // The variables will be allocated on the stack of that thread, in that node's RAM sticks.
-        auto& vectors = colocated_pool.node_id() == 0 ? first_half : second_half;
-        auto vectors_count = vectors.size() / dimensions; // ! Won't diverge between threads in one pool.
-        
-        return colocated_pool.for_slices(vectors_count, [&](std::size_t first_index, std::size_t count) noexcept {
-            search_result_t thread_local_result;
-            for (std::size_t task_index = first_index; task_index < first_index + count; ++task_index) {
-                simsimd_distance_t distance;
-                simsimd_f32_cos(query.data(), vectors.data() + task_index * dimensions, dimensions, &distance);
-                thread_local_result = pick_best(thread_local_result, {distance, task_index});
-            }
+        // ! We are spinning on a remote cache line... for simplicity.
+        std::lock_guard<fu::spin_mutex_t> lock(result_update);
+        result = pick_best(result, thread_local_result);
+    };
 
-            // ! We are spinning on a remote cache line... for simplicity.
-            std::lock_guard<fu::spin_mutex_t> lock(result_update);
-            result = pick_best(result, thread_local_result);
-        });
-    });
-
+    auto _ = distributed_pool[0].for_slices(first_half.size() / dimensions, concurrent_searcher);
+    auto _ = distributed_pool[1].for_slices(second_half.size() / dimensions, concurrent_searcher);
     return result;
 }
 ```
 
-In a dream world, we would call `numa_thread_pool.for_n`, but there is no clean way to make the scheduling processes aware of the data distribution in an arbitrary application, so that's left to the user.
-Combining `numa_thread_pool.for_colocated_threads`  with `colocated_pool.for_slices` is the cheapest general-purpose recipe for Big Data applications.
-Thanks to keeping the vocabulary of the thread-pool minimal and avoiding 
+In a dream world, we would call `distributed_pool.for_n`, but there is no clean way to make the scheduling processes aware of the data distribution in an arbitrary application, so that's left to the user.
+Calling `linux_colocated_pool::for_slices` on individual NUMA-node-specific colocated pools is the cheapest general-purpose recipe for Big Data applications.
+For more flexibility around building higher-level low-latency systems, there are unsafe APIs expecting you to manually "join" the broadcasted calls, like `unsafe_for_slices` and `unsafe_join`.
+Instead of hard-coding the `distributed_pool[0]` and `distributed_pool[1]`, we can iterate through them without keeping the lifetime-preserving handle to the passed `concurrent_searcher`:
+
+```cpp
+for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
+    distributed_pool[colocation].unsafe_for_slices(..., concurrent_searcher);
+for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
+    distributed_pool[colocation].unsafe_join();
+```
 
 ### Efficient Busy Waiting
 
