@@ -21,10 +21,15 @@ function (set_target_properties_for_fork_union_script target_name)
             OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
             OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
         )
-            message(STATUS "Enabling ThreadSanitizer for ${TGT}")
-            target_compile_options(${TGT} PRIVATE -g -O1)
-            target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread -fno-omit-frame-pointer)
-            target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # Using thread sanitizers caused all kinds of stalls on NUMA systems
+            # ~~~
+            # message(STATUS "Enabling ThreadSanitizer for ${TGT}")
+            # target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # ~~~
+            target_compile_options(${TGT} PRIVATE -g -O0)
+            target_compile_options(${TGT} PRIVATE -fno-omit-frame-pointer)
+            target_link_options(${TGT} PRIVATE)
         endif ()
     endif ()
 endfunction ()
