@@ -1283,9 +1283,20 @@ struct numa_topology {
         o.cores_count_ = 0;
     }
 
+    numa_topology &operator=(numa_topology &&other) noexcept {
+        if (this != &other) {
+            reset(); // ? Reset the current state
+            allocator_ = std::move(other.allocator_);
+            nodes_ = std::exchange(other.nodes_, nullptr);
+            node_core_ids_ = std::exchange(other.node_core_ids_, nullptr);
+            nodes_count_ = std::exchange(other.nodes_count_, 0);
+            cores_count_ = std::exchange(other.cores_count_, 0);
+        }
+        return *this;
+    }
+
     numa_topology(numa_topology const &) = delete;
     numa_topology &operator=(numa_topology const &) = delete;
-    numa_topology &operator=(numa_topology &&) = delete;
 
     ~numa_topology() noexcept { reset(); }
 
@@ -1387,6 +1398,55 @@ struct numa_topology {
         if (core_ids_ptr) cores_alloc.deallocate(core_ids_ptr, fetched_cores);
         if (numa_mask) ::numa_free_cpumask(numa_mask);
         return false;
+    }
+
+    /**
+     *  @brief Copy-assigns the topology from @p other.
+     *
+     *  Instead of a copy-constructor we expose an explicit operation that can
+     *  FAIL – returning `false` if *any* intermediate allocation fails.
+     *
+     *  @param other Source topology.
+     *  @retval true  Success, the current instance now owns a deep copy.
+     *  @retval false Allocation failed, the current instance is unchanged.
+     */
+    bool try_assign(numa_topology const &other) noexcept {
+        if (this == &other) return true; // ? Self-assignment is a no-op
+
+        // Prepare scratch
+        nodes_allocator_t nodes_alloc {allocator_};
+        cores_allocator_t cores_alloc {allocator_};
+
+        numa_node_t *scratch_nodes = nullptr;
+        numa_core_id_t *scratch_core_ids = nullptr;
+        if (other.nodes_count_) {
+            scratch_nodes = nodes_alloc.allocate(other.nodes_count_);
+            if (!scratch_nodes) return false; // ! OOM
+        }
+        if (other.cores_count_) {
+            scratch_core_ids = cores_alloc.allocate(other.cores_count_);
+            if (!scratch_core_ids) {
+                if (scratch_nodes) nodes_alloc.deallocate(scratch_nodes, other.nodes_count_);
+                return false; // ! OOM
+            }
+        }
+
+        // Deep copy
+        std::memcpy(scratch_core_ids, other.node_core_ids_, other.cores_count_ * sizeof(numa_core_id_t));
+        for (std::size_t i = 0; i < other.nodes_count_; ++i) {
+            scratch_nodes[i] = other.nodes_[i];
+            // Re-base `first_core_id` so it points into our own core-id block
+            std::ptrdiff_t const offset = other.nodes_[i].first_core_id - other.node_core_ids_;
+            scratch_nodes[i].first_core_id = scratch_core_ids + offset;
+        }
+
+        reset(); // ? Free old buffers
+        nodes_ = scratch_nodes;
+        node_core_ids_ = scratch_core_ids;
+        nodes_count_ = other.nodes_count_;
+        cores_count_ = other.cores_count_;
+        huge_page_sizes_ = other.huge_page_sizes_;
+        return true;
     }
 };
 
