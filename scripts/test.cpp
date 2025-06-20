@@ -19,7 +19,7 @@ template class fu::basic_pool<>;
 
 #if FU_ENABLE_NUMA
 template class fu::linux_colocated_pool<>;
-template class fu::linux_pool<>;
+template class fu::linux_distributed_pool<>;
 #endif
 
 constexpr std::size_t default_parts = 10000; // 10K
@@ -38,8 +38,8 @@ struct make_linux_colocated_pool_t {
     fu::linux_colocated_pool_t construct() const noexcept { return fu::linux_colocated_pool_t("fork_union"); }
     fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
 };
-struct make_linux_pool_t {
-    fu::linux_pool_t construct() const noexcept { return fu::linux_pool_t("fork_union"); }
+struct make_linux_distributed_pool_t {
+    fu::linux_distributed_pool_t construct() const noexcept { return fu::linux_distributed_pool_t("fork_union"); }
     std::size_t scope(std::size_t = 0) const noexcept { return numa_topology.threads_count(); }
 };
 #endif

@@ -47,7 +47,7 @@
  *
  *  Unlike the C++ version, the C header wraps the best-fit pre-compiled platform-specific instantiation
  *  of C++ templates. It also uses a singleton state to store the NUMA topology and other OS/machine specs.
- *  Under the hood, the `fu_pool_t` maps to a `basic_pool` or `linux_pool`.
+ *  Under the hood, the `fu_pool_t` maps to a `basic_pool` or `linux_distributed_pool`.
  *  For advanced usage, prefer the core C++ library.
  */
 #pragma once
