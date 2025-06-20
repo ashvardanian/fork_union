@@ -2492,7 +2492,8 @@ class invoke_distributed_for_n_dynamic {
             // Run (up to) one static prong on the current thread
             index_type_ const thread_local_index = pool_.thread_local_index(thread, native_colocation);
             index_type_ const one_static_prong_index = static_cast<index_type_>(n_local_dynamic + thread_local_index);
-            colocated_prong<index_type_> prong(one_static_prong_index, thread, native_colocation);
+            colocated_prong<index_type_> prong( //
+                static_cast<index_type_>(range_local.first + one_static_prong_index), thread, native_colocation);
             if (one_static_prong_index < n_local) fork_(prong);
         }
 
@@ -2514,7 +2515,7 @@ class invoke_distributed_for_n_dynamic {
                 index_type_ prong_local_offset = local_progress.fetch_add(1, std::memory_order_relaxed);
                 bool const beyond_last_prong = prong_local_offset >= n_local_dynamic;
                 if (beyond_last_prong) break;
-                colocated_prong<index_type_> prong(prong_local_offset, thread, current_colocation);
+                colocated_prong<index_type_> prong(range_local.first + prong_local_offset, thread, current_colocation);
                 fork_(prong);
             }
 
