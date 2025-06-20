@@ -1636,6 +1636,7 @@ struct linux_colocated_pool {
     numa_pthread_t *pthreads_ {nullptr};
     thread_index_t pthreads_count_ {0};
 
+    thread_index_t first_thread_ {0};                       // ? The index of the first thread to start from
     caller_exclusivity_t exclusivity_ {caller_inclusive_k}; // ? Whether the caller thread is included in the count
     std::size_t sleep_length_micros_ {0}; // ? How long to sleep in microseconds when waiting for tasks
 
@@ -1686,6 +1687,16 @@ struct linux_colocated_pool {
      */
     numa_node_id_t numa_node_id() const noexcept { return numa_node_id_; }
 
+    /**
+     *  @brief Returns the first thread index in the thread-pool.
+     *  @retval 0 in most cases, when the last argument to `try_spawn` is not specified.
+     *  @note This API is @b not synchronized.
+     */
+    thread_index_t first_thread() const noexcept { return first_thread_; }
+
+    /** @brief Exposes access to the internal atomic progress counter. Use with caution. */
+    std::atomic<index_t> &unsafe_dynamic_progress_ref() noexcept { return dynamic_progress_; }
+
 #pragma region Core API
 
     /**
@@ -1720,6 +1731,7 @@ struct linux_colocated_pool {
      *  @param[in] threads The number of threads to be used.
      *  @param[in] exclusivity Should we count the calling thread as one of the threads?
      *  @param[in] pin_granularity How to pin the threads to the NUMA node?
+     *  @param[in] first_thread The index of the first thread to start from, defaults to 0.
      *  @retval false if the number of threads is zero or if spawning has failed.
      *  @retval true if the thread-pool was created successfully, started, and is ready to use.
      *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
@@ -1736,7 +1748,8 @@ struct linux_colocated_pool {
      */
     bool try_spawn(numa_node_t const node, thread_index_t const threads,
                    caller_exclusivity_t const exclusivity = caller_inclusive_k,
-                   numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k) noexcept {
+                   numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k,
+                   thread_index_t const first_thread = 0) noexcept {
 
         if (threads == 0) return false;         // ! Can't have zero threads working on something
         if (pthreads_count_ != 0) return false; // ! Already initialized
@@ -1759,6 +1772,7 @@ struct linux_colocated_pool {
         // state variables that will be used in the `_posix_worker_loop` function.
         pthreads_ = pthreads;
         pthreads_count_ = threads;
+        first_thread_ = first_thread;
         exclusivity_ = exclusivity;
         numa_node_id_ = node.node_id;
         pin_granularity_ = pin_granularity;
@@ -2167,26 +2181,29 @@ struct linux_colocated_pool {
 
         // If we are ready to start grinding, export this threads metadata to make it externally
         // observable and controllable.
-        thread_index_t thread_index = -1;
+        thread_index_t local_thread_index = 0;
         if (mood == mood_t::grind_k) {
             // We locate the thread index by enumerating the `pthreads_` array
             numa_pthread_t *const numa_pthreads = pool->pthreads_;
             thread_index_t const numa_pthreads_count = pool->pthreads_count_;
             pthread_t const thread_handle = ::pthread_self();
-            for (thread_index = 0; thread_index < numa_pthreads_count; ++thread_index)
-                if (::pthread_equal(numa_pthreads[thread_index].handle.load(std::memory_order_relaxed), thread_handle))
+            for (local_thread_index = 0; local_thread_index < numa_pthreads_count; ++local_thread_index)
+                if (::pthread_equal(numa_pthreads[local_thread_index].handle.load(std::memory_order_relaxed),
+                                    thread_handle))
                     break;
-            assert(thread_index < numa_pthreads_count && "Thread index must be in [0, threads_count)");
+            assert(local_thread_index < numa_pthreads_count && "Thread index must be in [0, threads_count)");
 
             // Assign the pthread ID to the shared memory
             pid_t const pthread_id = ::gettid();
-            numa_pthreads[thread_index].id.store(pthread_id, std::memory_order_release);
+            numa_pthreads[local_thread_index].id.store(pthread_id, std::memory_order_release);
 
             // Ensure this function isn't used by the main caller
             caller_exclusivity_t const exclusivity = pool->caller_exclusivity();
             bool const use_caller_thread = exclusivity == caller_inclusive_k;
-            if (use_caller_thread) assert(thread_index != 0 && "The zero index is for the main thread, not worker!");
+            if (use_caller_thread)
+                assert(local_thread_index != 0 && "The zero index is for the main thread, not worker!");
         }
+        thread_index_t const global_thread_index = pool->first_thread_ + local_thread_index;
 
         // Run the infinite loop, using Linux-specific napping mechanism
         epoch_index_t last_epoch = 0;
@@ -2204,7 +2221,7 @@ struct linux_colocated_pool {
                 continue;
             }
 
-            pool->fork_trampoline_(pool->fork_state_, thread_index);
+            pool->fork_trampoline_(pool->fork_state_, global_thread_index);
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
