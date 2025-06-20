@@ -74,24 +74,23 @@ if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
     set(NUMA_FOUND FALSE)
     if (NUMA_LIBRARY)
         set(NUMA_FOUND TRUE)
-        message(STATUS "libnuma found: ${NUMA_LIBRARY}")
+        message(STATUS "libNUMA found: ${NUMA_LIBRARY}")
     else ()
-        message(STATUS "libnuma not found – building without NUMA support")
+        message(STATUS "libNUMA not found – building without NUMA support")
     endif ()
 
-    # Find HugeTLB support
-    find_path(HUGETLBFS_INCLUDE_DIR hugetlbfs.h)
-    set(HUGETLBFS_NAMES ${HUGETLBFS_NAMES} hugetlbfs)
-    find_library(HUGETLBFS_LIBRARY NAMES ${HUGETLBFS_NAMES})
+    # Find HugeTLBFS support
+    find_path(HUGETLBFS_INCLUDE_DIR NAMES hugetlbfs.h)
+    find_library(HUGETLBFS_LIBRARY NAMES hugetlbfs)
     include(FindPackageHandleStandardArgs)
-    find_package_handle_standard_args(HugeTLBFS DEFAULT_MSG HUGETLBFS_LIBRARY HUGETLBFS_INCLUDE_DIR)
+    find_package_handle_standard_args(HUGETLBFS DEFAULT_MSG HUGETLBFS_LIBRARY HUGETLBFS_INCLUDE_DIR)
     if (HUGETLBFS_FOUND)
         message(STATUS "HugeTLBFS found: ${HUGETLBFS_LIBRARY}")
     else ()
-        message(STATUS "HugeTLBFS not found – building without HugeTLB support")
+        message(STATUS "HugeTLBFS not found – building without HugeTLBFS support")
     endif ()
 
-    # Link to PThreads, libNUMA, and libHugeTLB
+    # Link to PThreads, libNUMA, and libHugeTLBFS
     if (Threads_FOUND
         AND NUMA_FOUND
         AND HUGETLBFS_FOUND
