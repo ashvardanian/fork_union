@@ -1045,14 +1045,20 @@ concept is_pool = //
     std::unsigned_integral<decltype(std::declval<pool_type_ const &>().threads_count())> &&
     std::convertible_to<decltype(std::declval<pool_type_ const &>().threads_count()), std::size_t> &&
     requires(pool_type_ &p) {
-        { p.for_threads(broadcasted_noop_t {}) };
+        { p.for_threads(broadcasted_noop_t {}) }; // Passing the callback by value
+    } &&                                          //
+    requires(pool_type_ &p, broadcasted_noop_t const &noop) {
+        { p.for_threads(noop) }; // Passing the callback by const reference
+    } &&                         //
+    requires(pool_type_ &p, broadcasted_noop_t &noop) {
+        { p.for_threads(noop) }; // Passing the callback by non-const reference
     };
 
 template <typename pool_type_>
 concept is_unsafe_pool =   //
     is_pool<pool_type_> && //
-    requires(pool_type_ &p) {
-        { p.unsafe_for_threads(broadcasted_noop_t {}) } -> std::same_as<void>;
+    requires(pool_type_ &p, broadcasted_noop_t &noop) {
+        { p.unsafe_for_threads(noop) } -> std::same_as<void>;
     } && //
     requires(pool_type_ &p) {
         { p.unsafe_join() } -> std::same_as<void>;
