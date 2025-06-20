@@ -139,6 +139,10 @@ namespace fork_union {
 
 #pragma region - Helpers and Constants
 
+using numa_node_id_t = int; // ? A.k.a. NUMA node ID, in [0, numa_max_node())
+using numa_core_id_t = int; // ? A.k.a. CPU core ID, in [0, threads_count)
+using qos_level_t = int;    // ? Quality of Service, like: "performance", "efficiency", "low-power"
+
 /**
  *  @brief Defines variable alignment to avoid false sharing.
  *  @see https://en.cppreference.com/w/cpp/thread/hardware_destructive_interference_size
@@ -385,8 +389,16 @@ struct indexed_split {
     using indexed_range_t = indexed_range<index_t>;
 
     inline indexed_split() = default;
+
+    /**
+     *  @brief Constructs an indexed split for a given number of tasks and threads.
+     *  @param[in] tasks_count The total number of tasks to split; can be any unsigned integer.
+     *  @param[in] threads_count The number of threads to split the tasks into; can't be zero.
+     */
     inline indexed_split(index_t const tasks_count, index_t const threads_count) noexcept
-        : quotient_(tasks_count / threads_count), remainder_(tasks_count % threads_count) {}
+        : quotient_(tasks_count / threads_count), remainder_(tasks_count % threads_count) {
+        assert(threads_count > 0 && "Threads count must be greater than zero, or expect division by zero");
+    }
 
     inline indexed_range_t operator[](index_t const i) const noexcept {
         index_t const begin = quotient_ * i + (i < remainder_ ? i : remainder_);
@@ -603,7 +615,9 @@ constexpr bool can_be_for_task_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
 #if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
-    return std::is_nothrow_invocable_r_v<void, fork_t, index_t> || std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
+    return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>> ||
+           std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>> ||
+           std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
 #else
     return true;
 #endif
@@ -614,7 +628,8 @@ constexpr bool can_be_for_slice_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
 #if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
-    return std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>, index_t> ||
+    return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>, index_t> ||
+           std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>, index_t> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t, index_t>;
 #else
     return true;
@@ -723,6 +738,7 @@ class basic_pool {
     using thread_index_t = index_t;     // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
     using colocation_index_t = index_t; // ? A.k.a. "NUMA node ID" in [0, numa_nodes_count)
     using indexed_split_t = indexed_split<index_t>;
+    using prong_t = prong<index_t>;
 
     using punned_fork_context_t = void *;                                 // ? Pointer to the on-stack lambda
     using trampoline_t = void (*)(punned_fork_context_t, thread_index_t); // ? Wraps lambda's `operator()`
@@ -761,6 +777,21 @@ class basic_pool {
 
     /** @brief Checks if the thread-pool's core synchronization points are lock-free. */
     bool is_lock_free() const noexcept { return mood_.is_lock_free() && threads_to_sync_.is_lock_free(); }
+
+    /**
+     *  @brief Returns the NUMA node ID this thread-pool is pinned to.
+     *  @retval -1 as this thread-pool is not NUMA-aware.
+     */
+    constexpr numa_node_id_t numa_node_id() const noexcept { return -1; }
+
+    /**
+     *  @brief Returns the first thread index in the thread-pool.
+     *  @retval 0 as this pool isn't intended for colocated/distributed topologies.
+     */
+    constexpr thread_index_t first_thread() const noexcept { return 0; }
+
+    /** @brief Exposes access to the internal atomic progress counter. Use with caution. */
+    std::atomic<index_t> &unsafe_dynamic_progress_ref() noexcept { return dynamic_progress_; }
 
 #pragma region Core API
 
@@ -1240,10 +1271,6 @@ struct riscv_yield_t {
 #pragma endregion - Hardware Friendly Yield
 
 #pragma region - NUMA Pools
-
-using numa_node_id_t = int; // ? A.k.a. NUMA node ID, in [0, numa_max_node())
-using numa_core_id_t = int; // ? A.k.a. CPU core ID, in [0, threads_count)
-using qos_level_t = int;    // ? Quality of Service, like: "performance", "efficiency", "low-power"
 
 #if FU_ENABLE_NUMA
 
@@ -2419,10 +2446,6 @@ class invoke_distributed_for_n {
  *  @brief Wraps the metadata needed for `for_n_dynamic` APIs for `broadcast_join` compatibility.
  *  @note Similar to `invoke_for_n_dynamic`, but dynamically determines the threads' colocation.
  *
- *  @section Implementation Priors
- *
- *  - Each memory-pool has a roughly equal number of threads.
- *
  *  @section Scheduling Logic
  *
  *  Assuming the latency of accessing an atomic variable on a remote NUMA node is high, this "invoker"
@@ -2452,7 +2475,7 @@ class invoke_distributed_for_n_dynamic {
 
         // In each colocations part, take one static prong per thread, if present.
         indexed_split<index_type_> split_between_colocations(n_, colocations_count);
-        index_type_ const native_colocation = pool_.thread_colocation(thread).colocation;
+        index_type_ const native_colocation = pool_.thread_colocation(thread);
         {
             index_type_ const threads_local = pool_.threads_count(native_colocation);
             indexed_range<index_type_> const range_local = split_between_colocations[native_colocation];
@@ -2466,12 +2489,15 @@ class invoke_distributed_for_n_dynamic {
             if (one_static_prong_index < n_local) fork_(prong);
         }
 
+        coprime_permutation_range<index_type_> probing_strategy(0, colocations_count, thread);
+        auto probe_iterator = probing_strategy.begin();
+
         // Next we will probe every colocation:
         index_type_ colocations_checked = 0;
         index_type_ current_colocation = native_colocation;
         while (colocations_checked < colocations_count) {
             index_type_ const threads_local = pool_.threads_count(current_colocation);
-            std::atomic<index_type_> &local_progress = pool_.dynamic_counter(current_colocation);
+            std::atomic<index_type_> &local_progress = pool_.unsafe_dynamic_progress_ref(current_colocation);
             indexed_range<index_type_> const range_local = split_between_colocations[current_colocation];
             index_type_ const n_local = range_local.count;
             index_type_ const n_local_dynamic = n_local > threads_local ? n_local - threads_local : 0;
@@ -2486,7 +2512,8 @@ class invoke_distributed_for_n_dynamic {
             }
 
             // Now pick some other colocation to probe.
-            // TODO:
+            do { ++probe_iterator; } while (probe_iterator != end_sentinel_t && *probe_iterator == native_colocation);
+            current_colocation = *probe_iterator;
             colocations_checked++;
         }
     }
@@ -2519,6 +2546,7 @@ struct linux_distributed_pool {
     using epoch_index_t = typename linux_colocated_pool_t::epoch_index_t;
     using thread_index_t = typename linux_colocated_pool_t::thread_index_t;
     static constexpr std::size_t alignment_k = linux_colocated_pool_t::alignment_k;
+    using prong_t = colocated_prong<index_t>;
 
   private:
     numa_topology_t topology_ {};
@@ -2528,7 +2556,6 @@ struct linux_distributed_pool {
 
     struct colocation_t {
         alignas(alignment_k) linux_colocated_pool_t pool {};
-        thread_index_t first_thread {0};
     };
 
     /**
@@ -2604,24 +2631,62 @@ struct linux_distributed_pool {
      *  @brief Creates a thread-pool addressing all cores across all NUMA nodes.
      *  @param[in] threads The number of threads to be used.
      *  @param[in] exclusivity Should we count the calling thread as one of the threads?
+     *  @param[in] pin_granularity How to pin the threads to the NUMA node?
      *  @retval false if the number of threads is zero or if spawning has failed.
      *  @retval true if the thread-pool was created successfully, started, and is ready to use.
      *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
      */
     bool try_spawn(                   //
         thread_index_t const threads, //
-        caller_exclusivity_t const exclusivity = caller_inclusive_k) noexcept {
+        caller_exclusivity_t const exclusivity = caller_inclusive_k,
+        numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k) noexcept {
+        return try_spawn(topology_, threads, exclusivity, pin_granularity);
+    }
+
+    /**
+     *  @brief Creates a thread-pool addressing all cores across all NUMA nodes.
+     *  @param[in] topology The NUMA topology to use for the thread-pool.
+     *  @param[in] exclusivity Should we count the calling thread as one of the threads?
+     *  @param[in] pin_granularity How to pin the threads to the NUMA node?
+     *  @retval false if the number of threads is zero or if spawning has failed.
+     *  @retval true if the thread-pool was created successfully, started, and is ready to use.
+     *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
+     */
+    bool try_spawn( //
+        numa_topology_t const &topology, caller_exclusivity_t const exclusivity = caller_inclusive_k,
+        numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k) noexcept {
+        return try_spawn(topology, topology.threads_count(), exclusivity, pin_granularity);
+    }
+
+    /**
+     *  @brief Creates a thread-pool addressing all cores across all NUMA nodes.
+     *  @param[in] topology The NUMA topology to use for the thread-pool.
+     *  @param[in] threads The number of threads to be used.
+     *  @param[in] exclusivity Should we count the calling thread as one of the threads?
+     *  @param[in] pin_granularity How to pin the threads to the NUMA node?
+     *  @retval false if the number of threads is zero or if spawning has failed.
+     *  @retval true if the thread-pool was created successfully, started, and is ready to use.
+     *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
+     */
+    bool try_spawn( //
+        numa_topology_t const &topology,
+        thread_index_t const threads, //
+        caller_exclusivity_t const exclusivity = caller_inclusive_k,
+        numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k) noexcept {
 
         if (threads == 0) return false;        // ! Can't have zero threads working on something
         if (threads_count_ != 0) return false; // ! Already initialized
 
+        numa_topology_t new_topology;
+        if (!new_topology.try_assign(topology)) return false; // ! Copy-construction failed
+
         // We are going to place the control structures on the first NUMA node,
         // and pin the caller thread to it as well.
-        numa_node_t const &first_node = topology_.node(0);
+        numa_node_t const &first_node = new_topology.node(0);
         numa_node_id_t const first_node_id = first_node.node_id; // ? Typically zero
         linux_numa_allocator_t allocator {first_node_id};
         colocations_allocator_t colocations_allocator {allocator};
-        index_t const colocations_count = std::min(topology_.nodes_count(), threads);
+        index_t const colocations_count = std::min(new_topology.nodes_count(), threads);
 
         colocation_t **colocations = colocations_allocator.allocate(colocations_count);
         if (!colocations) return false; // ! Allocation failed
@@ -2629,27 +2694,29 @@ struct linux_distributed_pool {
         // Now allocate each "local pool" on its own NUMA node
         std::fill_n(colocations, colocations_count, nullptr);
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
-            numa_node_t const &node = topology_.node(colocation_index);
+            numa_node_t const &node = new_topology.node(colocation_index);
             numa_node_id_t const node_id = node.node_id;
             colocation_allocator_t allocator {node_id};
             colocation_t *pool = allocator.allocate(1);
             colocations[colocation_index] = pool;
         }
 
-        // If any one of the allocations failed, we need to clean up
         auto reset_on_failure = [&]() noexcept {
             for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
                 colocation_t *colocation = colocations[colocation_index];
                 if (!colocation) continue;
                 colocation->pool.terminate(); // ? Stop the pool if it was started
-                numa_node_t const &node = topology_.node(colocation_index);
+                numa_node_t const &node = new_topology.node(colocation_index);
                 numa_node_id_t const node_id = node.node_id;
                 colocation_allocator_t allocator {node_id};
                 allocator.deallocate(colocation, 1); // ? Reclaim the memory
             }
             colocations_allocator.deallocate(colocations, colocations_count);
         };
-        if (std::any_of(colocations, colocations + colocations_count, [](colocation_t *pool) { return !pool; })) {
+
+        // If any one of the allocations failed, we need to clean up
+        for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
+            if (colocations[colocation_index]) continue;
             reset_on_failure();
             return false; // ! Allocation failed
         }
@@ -2658,21 +2725,23 @@ struct linux_distributed_pool {
         // - the first one may be "inclusive".
         // - others are always "exclusive" to the caller thread.
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
-        thread_index_t const threads_per_node = (threads - use_caller_thread) / colocations_count;
-        if (!colocations[0]->pool.try_spawn(first_node, threads_per_node, exclusivity)) {
+        indexed_split<thread_index_t> threads_per_node(threads, colocations_count);
+        if (!colocations[0]->pool.try_spawn(first_node, threads_per_node[0].count, exclusivity, pin_granularity, 0)) {
             reset_on_failure();
             return false; // ! Spawning failed
         }
 
         for (index_t colocation_index = 1; colocation_index < colocations_count; ++colocation_index) {
-            numa_node_t const &node = topology_.node(colocation_index);
+            numa_node_t const &node = new_topology.node(colocation_index);
             colocation_t *colocation = colocations[colocation_index];
-            if (!colocation->pool.try_spawn(node, threads_per_node, caller_exclusive_k)) {
+            if (!colocation->pool.try_spawn(node, threads_per_node[colocation_index].count, caller_exclusive_k,
+                                            pin_granularity, threads_per_node[colocation_index].first)) {
                 reset_on_failure();
                 return false; // ! Spawning failed
             }
         }
 
+        topology_ = std::move(new_topology);
         colocations_ = colocations;
         colocations_count_ = colocations_count;
         threads_count_ = threads;
@@ -2708,7 +2777,7 @@ struct linux_distributed_pool {
             assert(colocation && "Colocation can't be NULL");
             colocation->pool.unsafe_for_threads(fork);
         }
-        colocations_[0]->unsafe_for_threads(fork);
+        colocations_[0]->pool.unsafe_for_threads(fork);
     }
 
     /** @brief Blocks the calling thread until the currently broadcasted task finishes. */
@@ -2823,18 +2892,18 @@ struct linux_distributed_pool {
 
     /**
      *  @brief Distributes @p `n` similar duration calls between threads.
-     *  @param[in] n The number of times to call the @p function.
-     *  @param[in] function The callback, receiving @b `prong_t` or a call index as an argument.
+     *  @param[in] n The number of times to call the @p fork.
+     *  @param[in] fork The callback object, receiving @b `prong_t` or a call index as an argument.
      *
      *  Is designed for a "balanced" workload, where all threads have roughly the same amount of work.
      *  @sa `for_n_dynamic` for a more dynamic workload.
-     *  The @p function is called @p `n` times, and each thread receives a slice of consecutive tasks.
+     *  The @p fork is called @p `n` times, and each thread receives a slice of consecutive tasks.
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool, invoke_distributed_for_n<linux_distributed_pool, fork_type_, index_t>> //
-        for_n(index_t const n, fork_type_ &&function) noexcept {
+        for_n(index_t const n, fork_type_ &&fork) noexcept {
 
         return {*this, {*this, n, threads_count(), std::forward<fork_type_>(fork)}};
     }
@@ -2848,8 +2917,8 @@ struct linux_distributed_pool {
     _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
     void unsafe_for_n(index_t const n, fork_type_ &fork) noexcept {
 
-        invoke_distributed_for_n<linux_distributed_pool, fork_type_ const &, index_t> invoker {*this, fork, n,
-                                                                                               threads_count()};
+        invoke_distributed_for_n<linux_distributed_pool, fork_type_ const &, index_t> invoker {*this, n,
+                                                                                               threads_count(), fork};
         unsafe_for_threads(invoker);
     }
 
@@ -2885,13 +2954,6 @@ struct linux_distributed_pool {
 
 #pragma region Colocations Compatibility
 
-    struct thread_location_t {
-        index_t colocation {0}; // ? The NUMA node index
-        index_t memory {0};     // ? The memory locality index
-    };
-
-    thread_location_t thread_location(thread_index_t) const noexcept { return {}; }
-
     /**
      *  @brief Number of individual sub-pool with the same NUMA-locality and QoS.
      */
@@ -2916,7 +2978,22 @@ struct linux_distributed_pool {
     thread_index_t thread_local_index(thread_index_t global_thread_index, index_t colocation) const noexcept {
         assert(colocations_ && "Local pools must be initialized");
         assert(colocation < colocations_count_ && "Local pool index out of bounds");
-        return global_thread_index - colocations_[colocation]->first_thread;
+        return global_thread_index - colocations_[colocation]->pool.first_thread();
+    }
+
+    index_t thread_colocation(thread_index_t global_thread_index) const noexcept {
+        index_t colocation_index = 0;
+        for (; colocation_index < colocations_count_; ++colocation_index) {
+            colocation_t *colocation = colocations_[colocation_index];
+            if (global_thread_index < colocation->pool.first_thread()) continue;
+            if (global_thread_index < colocation->pool.first_thread() + colocation->pool.threads_count())
+                return colocation_index;
+        }
+        return colocation_index; // ? Not found
+    }
+
+    std::atomic<index_t> &unsafe_dynamic_progress_ref(index_t colocation) noexcept {
+        return colocations_[colocation]->pool.unsafe_dynamic_progress_ref();
     }
 
 #pragma endregion Colocations Compatibility
@@ -2926,9 +3003,9 @@ using linux_colocated_pool_t = linux_colocated_pool<>;
 using linux_distributed_pool_t = linux_distributed_pool<>;
 
 #if _FU_DETECT_CONCEPTS
-static_assert(is_unsafe_pool<basic_pool_t>() && is_unsafe_pool<linux_colocated_pool_t>(),
+static_assert(is_unsafe_pool<basic_pool_t> && is_unsafe_pool<linux_colocated_pool_t>,
               "These thread pools must be flexible and support unsafe operations");
-static_assert(is_pool<basic_pool_t>() && is_pool<linux_colocated_pool_t>() && is_pool<linux_distributed_pool_t>(),
+static_assert(is_pool<basic_pool_t> && is_pool<linux_colocated_pool_t> && is_pool<linux_distributed_pool_t>,
               "These thread pools must be fully compatible with the high-level APIs");
 #endif // _FU_DETECT_CONCEPTS
 

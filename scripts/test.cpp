@@ -79,8 +79,6 @@ bool test_coprime_permutation() noexcept {
 
 constexpr std::size_t default_parallel_tasks_k = 10000; // 10K
 
-constexpr std::size_t default_parts = 10000; // 10K
-
 struct make_pool_t {
     fu::basic_pool_t construct() const noexcept { return fu::basic_pool_t(); }
     std::size_t scope(std::size_t oversubscription = 1) const noexcept {
@@ -97,7 +95,7 @@ struct make_linux_colocated_pool_t {
 };
 struct make_linux_distributed_pool_t {
     fu::linux_distributed_pool_t construct() const noexcept { return fu::linux_distributed_pool_t("fork_union"); }
-    std::size_t scope(std::size_t = 0) const noexcept { return numa_topology.threads_count(); }
+    fu::numa_topology_t const &scope(std::size_t = 0) const noexcept { return numa_topology; }
 };
 #endif
 
@@ -241,31 +239,31 @@ template <typename make_pool_type_ = make_pool_t>
 static bool test_for_n() noexcept {
 
     std::atomic<std::size_t> counter(0);
-    std::vector<aligned_visit_t> visited(default_parts);
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
 
     auto maker = make_pool_type_ {};
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope())) return false;
 
-    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    if (counter.load() != default_parts) return false;
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
 /** @brief Make sure that `for_n_dynamic` is called the right number of times with the right prong IDs. */
@@ -276,27 +274,27 @@ static bool test_for_n_dynamic() noexcept {
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope())) return false;
 
-    std::vector<aligned_visit_t> visited(default_parts);
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
-    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    if (counter.load() != default_parts) return false;
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
 /** @brief Stress-tests the implementation by oversubscribing the number of threads. */
@@ -308,10 +306,10 @@ static bool test_oversubscribed_threads() noexcept {
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope(oversubscription))) return false;
 
-    std::vector<aligned_visit_t> visited(default_parts);
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
     thread_local volatile std::size_t some_local_work = 0;
-    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // Perform some weird amount of work, that is not very different between consecutive tasks.
         for (std::size_t i = 0; i != task % oversubscription; ++i) some_local_work = some_local_work + i * i;
 
@@ -320,11 +318,12 @@ static bool test_oversubscribed_threads() noexcept {
         visited[count_populated].task = task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    return counter.load() == default_parts && contains_iota(visited);
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
-/** @brief Make sure that that we can combine static and dynamic workloads over the same pool with & w/out resetting. */
+/** @brief Make sure that that we can combine static and dynamic workloads over the same pool with & w/out
+ * resetting. */
 template <bool should_restart_, typename make_pool_type_ = make_pool_t>
 static bool test_mixed_restart() noexcept {
 
@@ -332,15 +331,15 @@ static bool test_mixed_restart() noexcept {
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope())) return false;
 
-    std::vector<aligned_visit_t> visited(default_parts);
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
 
-    pool.for_n(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that the pool can be reset and reused
@@ -351,20 +350,21 @@ static bool test_mixed_restart() noexcept {
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    pool.for_n_dynamic(default_parts, [&](std::size_t const task) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
 /** @brief Hard complex example, involving launching multiple tasks, including static and dynamic ones,
  *         stopping them half-way, resetting & reinitializing, and raising exceptions.
  */
 template <typename pool_type_>
-static bool stress_test_composite(std::size_t const threads_count, std::size_t const default_parts) noexcept {
+static bool stress_test_composite(std::size_t const threads_count,
+                                  std::size_t const default_parallel_tasks_k) noexcept {
 
     using pool_t = pool_type_;
     using index_t = typename pool_t::index_t;
@@ -375,23 +375,23 @@ static bool stress_test_composite(std::size_t const threads_count, std::size_t c
 
     // Make sure that no overflow happens in the static scheduling
     std::atomic<std::size_t> counter(0);
-    std::vector<aligned_visit_t> visited(default_parts);
-    pool.for_n(default_parts, [&](prong_t prong) noexcept {
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
+    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that no overflow happens in the dynamic scheduling
     counter = 0;
-    pool.for_n_dynamic(default_parts, [&](prong_t prong) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure the operations can be interrupted from inside the prong

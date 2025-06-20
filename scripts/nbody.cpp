@@ -178,27 +178,27 @@ void iteration_fork_union_numa_static(fu::linux_distributed_pool_t &pool, body_t
                                       vector3_t *_FU_RESTRICT forces, std::size_t n,
                                       body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
+    using colocated_prong_t = typename fu::linux_distributed_pool_t::prong_t;
     std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This is a quadratic complexity all-to-all interaction, and it's not clear how
     // it can "shard" to take advantage of NUMA locality, especially for a small `n` world.
     // Still, at least we can replicate the body positions onto every node just once per iteration,
     // to reduce the number of remote accesses, even if they are cached.
-    pool.for_threads([&](auto prong) noexcept {
-        std::size_t const thread_index = prong.thread;
-        std::size_t const numa_node_index = prong.colocation;
+    pool.for_threads([&](auto thread_index) noexcept {
+        std::size_t const numa_node_index = pool.thread_colocation(thread_index);
         std::size_t const threads_next_to_numa_node = pool.threads_count(numa_node_index);
         std::size_t const thread_local_index = pool.thread_local_index(thread_index, numa_node_index);
 
-        indexed_split_t const n_split {n, threads_next_to_numa_node};
-        indexed_range_t const n_subrange = n_split[thread_local_index];
+        fu::indexed_split_t const n_split {n, threads_next_to_numa_node};
+        fu::indexed_range_t const n_subrange = n_split[thread_local_index];
         std::memcpy(                                                //
             &bodies_numa_copies[numa_node_index][n_subrange.first], //
             &bodies[n_subrange.first],                              //
             n_subrange.count * sizeof(body_t));
     });
 
-    pool.for_n(n, [&](auto prong) noexcept {
+    pool.for_n(n, [&](colocated_prong_t prong) noexcept {
         std::size_t const numa_node_index = prong.colocation;
         body_t const *numa_bodies = bodies_numa_copies[numa_node_index];
         body_t const body_i = numa_bodies[prong.task];
@@ -214,17 +214,17 @@ void iteration_fork_union_numa_dynamic(fu::linux_distributed_pool_t &pool, body_
                                        vector3_t *_FU_RESTRICT forces, std::size_t n,
                                        body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
+    using colocated_prong_t = typename fu::linux_distributed_pool_t::prong_t;
     std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This expressions is same as in `iteration_fork_union_numa_static` static version:
-    pool.for_threads([&](auto prong) noexcept {
-        std::size_t const thread_index = prong.thread;
-        std::size_t const numa_node_index = prong.colocation;
+    pool.for_threads([&](auto thread_index) noexcept {
+        std::size_t const numa_node_index = pool.thread_colocation(thread_index);
         std::size_t const threads_next_to_numa_node = pool.threads_count(numa_node_index);
         std::size_t const thread_local_index = pool.thread_local_index(thread_index, numa_node_index);
 
-        indexed_split_t const n_split {n, threads_next_to_numa_node};
-        indexed_range_t const n_subrange = n_split[thread_local_index];
+        fu::indexed_split_t const n_split {n, threads_next_to_numa_node};
+        fu::indexed_range_t const n_subrange = n_split[thread_local_index];
         std::memcpy(                                                //
             &bodies_numa_copies[numa_node_index][n_subrange.first], //
             &bodies[n_subrange.first],                              //
@@ -232,7 +232,7 @@ void iteration_fork_union_numa_dynamic(fu::linux_distributed_pool_t &pool, body_
     });
 
     // The rest only differs in the `for_n_dynamic` usage over `for_n`:
-    pool.for_n_dynamic(n, [&](auto prong) noexcept {
+    pool.for_n_dynamic(n, [&](colocated_prong_t prong) noexcept {
         std::size_t const numa_node_index = prong.colocation;
         body_t const *numa_bodies = bodies_numa_copies[numa_node_index];
         body_t const body_i = numa_bodies[prong.task];
@@ -317,7 +317,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    fu::linux_distributed_pool_t numa_pool(topology);
+    fu::linux_distributed_pool_t numa_pool(std::move(topology));
     std::vector<linux_numa_bodies_t> bodies_numa_arrays = make_buffers_for_fork_union_numa(numa_pool, n);
     std::vector<body_t *> bodies_numa_buffers(bodies_numa_arrays.size());
     for (std::size_t i = 0; i < bodies_numa_arrays.size(); ++i) bodies_numa_buffers[i] = bodies_numa_arrays[i].data();
