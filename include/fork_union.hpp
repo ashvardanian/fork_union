@@ -2467,7 +2467,13 @@ class invoke_distributed_for_n_dynamic {
 
   public:
     invoke_distributed_for_n_dynamic(pool_type_ &pool, index_type_ n, fork_type_ &&fork) noexcept
-        : pool_(pool), n_(n), fork_(std::forward<fork_type_>(fork)) {}
+        : pool_(pool), n_(n), fork_(std::forward<fork_type_>(fork)) {
+
+        // Reset the local progress to zero in each colocation
+        index_type_ const colocations_count = pool_.colocations_count();
+        for (index_type_ i = 0; i < colocations_count; ++i)
+            pool_.unsafe_dynamic_progress_ref(i).store(0, std::memory_order_release);
+    }
 
     void operator()(index_type_ const thread) noexcept {
         index_type_ const colocations_count = pool_.colocations_count();
@@ -2493,9 +2499,9 @@ class invoke_distributed_for_n_dynamic {
         auto probe_iterator = probing_strategy.begin();
 
         // Next we will probe every colocation:
-        index_type_ colocations_checked = 0;
+        index_type_ colocations_remaining = colocations_count;
         index_type_ current_colocation = native_colocation;
-        while (colocations_checked < colocations_count) {
+        while (colocations_remaining) {
             index_type_ const threads_local = pool_.threads_count(current_colocation);
             std::atomic<index_type_> &local_progress = pool_.unsafe_dynamic_progress_ref(current_colocation);
             indexed_range<index_type_> const range_local = split_between_colocations[current_colocation];
@@ -2512,9 +2518,11 @@ class invoke_distributed_for_n_dynamic {
             }
 
             // Now pick some other colocation to probe.
-            do { ++probe_iterator; } while (probe_iterator != end_sentinel_t && *probe_iterator == native_colocation);
-            current_colocation = *probe_iterator;
-            colocations_checked++;
+            colocations_remaining--;
+            if (colocations_remaining) {
+                do { ++probe_iterator; } while (*probe_iterator == native_colocation); // At most 2 iterations
+                current_colocation = *probe_iterator;
+            }
         }
     }
 };
