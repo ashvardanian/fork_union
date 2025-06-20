@@ -400,6 +400,112 @@ struct indexed_split {
 };
 
 using indexed_split_t = indexed_split<>;
+/**
+ *  @brief Pre-C++20 sentinel type for iterators.
+ *  @see   https://en.cppreference.com/w/cpp/iterator/default_sentinel.html
+ */
+struct default_sentinel_t {};
+
+/**
+ *  @brief Iterator range over integers using a stride that is co-prime with length.
+ *
+ *  - O(1) dereference: two integer ops and a branchless wrap-around.
+ *  - Every value appears exactly once before `end()`.
+ *
+ *  @code{.cpp}
+ *  coprime_permutation_range<> perm(start, length, seed);
+ *  for (auto v : perm) steal_from(v);
+ *  @endcode
+ */
+template <typename index_type_ = std::size_t>
+struct coprime_permutation_range {
+    using index_t = index_type_;
+
+    struct iterator {
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = index_t;
+        using difference_type = std::ptrdiff_t;
+        using pointer = void;
+        using reference = value_type;
+
+        inline value_type operator*() const noexcept { return static_cast<index_t>(start_ + offset_); }
+
+        inline iterator &operator++() noexcept {
+            assert(elements_left_ != 0 && "Attempting to increment an iterator beyond bounds");
+            offset_ = static_cast<index_t>(offset_ + stride_);
+
+            // Avoid modulo division by using wrap-around logic.
+            if (offset_ >= length_) offset_ = static_cast<index_t>(offset_ - length_);
+            --elements_left_;
+            return *this;
+        }
+
+        inline iterator operator++(int) noexcept {
+            iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        inline bool operator==(default_sentinel_t) const noexcept { return elements_left_ == 0; }
+        inline bool operator!=(default_sentinel_t s) const noexcept { return !(*this == s); }
+
+      private:
+        friend struct coprime_permutation_range;
+
+        inline iterator(index_t const start, index_t const length, index_t const stride,
+                        index_t const elements_left) noexcept
+            : start_(start), length_(length), stride_(stride), offset_(0), elements_left_(elements_left) {}
+
+        index_t start_ {0};         // first value of the domain
+        index_t length_ {1};        // |domain|
+        index_t stride_ {1};        // co-prime step
+        index_t offset_ {0};        // current offset 0 ... length_-1
+        index_t elements_left_ {0}; // countdown until `end()`
+    };
+
+    coprime_permutation_range() = default;
+
+    /**
+     *  @param[in] start First element of the permutation.
+     *  @param[in] length Size of the domain to permute; must be > 0.
+     *  @param[in] seed Thread-specific value used to derive a unique stride.
+     */
+    coprime_permutation_range(index_t const start, index_t const length, index_t const seed) noexcept
+        : start_(start), length_(length), stride_(pick_stride(seed, length_)) {
+        assert(length_ > 0 && "Length must be greater than zero, or expect division by zero");
+    }
+
+    iterator begin() const noexcept { return iterator(start_, length_, stride_, length_); }
+    default_sentinel_t end() const noexcept { return {}; }
+    index_t size() const noexcept { return length_; }
+
+  private:
+    static constexpr index_t gcd(index_t a, index_t b) noexcept {
+        while (b) {
+            index_t const t = a % b;
+            a = b;
+            b = t;
+        }
+        return a;
+    }
+
+    static index_t pick_stride(index_t seed, index_t const length) noexcept {
+        // Pick an odd stride derived from @p seed that is co-prime with @p length.
+        if (length <= 1) return 0;                              // degenerate case
+        seed = static_cast<index_t>((seed * 2u + 1u) % length); // force odd
+        while (gcd(seed, length) != 1) {                        // insure co-prime
+            seed += 2u;
+            if (seed >= length) seed -= length;
+        }
+        return seed;
+    }
+
+    index_t start_ {0};
+    index_t length_ {1};
+    index_t stride_ {1};
+};
+
+using coprime_permutation_range_t = coprime_permutation_range<>;
 
 /** @brief Wraps the metadata needed for `for_slices` APIs for `broadcast_join` compatibility. */
 template <typename fork_type_, typename index_type_>
