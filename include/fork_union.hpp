@@ -1974,8 +1974,8 @@ struct linux_colocated_pool {
                 // Assign to a core in a round-robin fashion
                 numa_core_id_t cpu = node.first_core_id[i % node.core_count];
                 assert(cpu >= 0 && "Invalid CPU core ID");
-                CPU_ZERO(cpu_set_ptr);
-                CPU_SET(cpu, cpu_set_ptr);
+                CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
+                CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
 
                 // Assign the mask to the thread
                 pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
@@ -1986,13 +1986,13 @@ struct linux_colocated_pool {
         }
         else {
             // Configure one mask that will be shared by all threads
-            CPU_ZERO(cpu_set_ptr);
+            CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
             for (std::size_t i = 0; i < node.core_count; ++i) {
                 numa_core_id_t cpu = node.first_core_id[i];
                 assert(cpu >= 0 && "Invalid CPU core ID");
-                CPU_SET(cpu, cpu_set_ptr);
+                CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
             }
-            assert(static_cast<std::size_t>(CPU_COUNT(cpu_set_ptr)) == node.core_count &&
+            assert(static_cast<std::size_t>(CPU_COUNT_S(cpu_set_size, cpu_set_ptr)) == node.core_count &&
                    "The CPU set must match the number of cores in the NUMA node");
 
             // Assign the same mask to all threads
@@ -2283,9 +2283,10 @@ struct linux_colocated_pool {
         int const max_possible_cores = ::numa_num_possible_cpus();
         cpu_set_t *cpu_set_ptr = CPU_ALLOC(max_possible_cores);
         if (!cpu_set_ptr) return;
-        CPU_ZERO(cpu_set_ptr);
-        for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET(cpu, cpu_set_ptr);
-        int pin_result = ::pthread_setaffinity_np(::pthread_self(), CPU_ALLOC_SIZE(max_possible_cores), cpu_set_ptr);
+        std::size_t const cpu_set_size = CPU_ALLOC_SIZE(max_possible_cores);
+        CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
+        for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
+        int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
         assert(pin_result == 0 && "Failed to reset the caller thread's affinity");
         CPU_FREE(cpu_set_ptr);
         int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
