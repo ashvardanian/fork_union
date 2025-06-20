@@ -424,6 +424,14 @@ cmake --build build_debug --config Debug  # build with Debug symbols
 build_debug/scripts/fork_union_test_cpp20 # run a single test executable
 ```
 
+To include NUMA, Huge Pages, and other optimizations on Linux, make sure to install dependencies:
+
+```bash
+sudo apt-get -y install libnuma-dev libnuma1                # NUMA
+sudo apt-get -y install libhugetlbfs-dev libhugetlbfs-bin   # Huge Pages
+sudo ln -s /usr/bin/ld.hugetlbfs /usr/share/libhugetlbfs/ld # Huge Pages linker
+```
+
 To build with an alternative compiler, like LLVM Clang, use the following command:
 
 ```bash
