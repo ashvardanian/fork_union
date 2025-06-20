@@ -22,6 +22,63 @@ template class fu::linux_colocated_pool<>;
 template class fu::linux_distributed_pool<>;
 #endif
 
+template <typename index_type_ = std::uint8_t>
+bool test_indexed_split() noexcept {
+    std::size_t max_tasks = std::numeric_limits<index_type_>::max();
+    std::size_t max_threads = std::numeric_limits<index_type_>::max();
+    std::vector<bool> visits(max_tasks);
+
+    for (std::size_t threads = 1; threads < max_threads; ++threads) {
+        for (std::size_t tasks = 0; tasks < max_tasks; ++tasks) {
+
+            // Reset visits for each test case
+            std::fill_n(visits.begin(), max_tasks, false);
+
+            fu::indexed_split<index_type_> split {static_cast<index_type_>(tasks), static_cast<index_type_>(threads)};
+            for (std::size_t thread = 0; thread < threads; ++thread) {
+                auto subrange = split[thread];
+                for (std::size_t task = subrange.first; task < subrange.first + subrange.count; ++task) {
+                    if (task >= tasks) return false; // Out of bounds
+                    if (visits[task]) return false;  // Already visited
+                    visits[task] = true;             // Mark as visited
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+template <typename index_type_ = std::uint8_t>
+bool test_coprime_permutation() noexcept {
+    constexpr std::size_t max_tasks = std::numeric_limits<index_type_>::max();
+
+    for (std::size_t start = 0; start < max_tasks; ++start) {
+        for (std::size_t end = start + 1; end < max_tasks; ++end) {
+            for (std::size_t seed = 0; seed < max_tasks; ++seed) {
+
+                // Create a coprime permutation and make sure it only covers the range [start, end)
+                index_type_ const range_size = static_cast<index_type_>(end - start);
+                fu::coprime_permutation_range<index_type_> permutation(start, range_size, seed);
+
+                std::size_t count_matches = 0;
+                for (auto value : permutation) {
+                    if (value < start || value >= end) {
+                        return false; // Out of range
+                    }
+                    count_matches++;
+                }
+                if (count_matches != range_size) {
+                    return false; // Not all values in the range were covered
+                }
+            }
+        }
+    }
+    return true;
+}
+
+constexpr std::size_t default_parallel_tasks_k = 10000; // 10K
+
 constexpr std::size_t default_parts = 10000; // 10K
 
 struct make_pool_t {
@@ -382,6 +439,9 @@ int main(void) {
         char const *name;
         test_func_t *function;
     } const unit_tests[] = {
+        {"`indexed_split` helpers", test_indexed_split},            //
+        {"`coprime_permutation` ranges", test_coprime_permutation}, //
+        // Actual thread-pools
         {"`try_spawn` zero threads", test_try_spawn_zero},                       //
         {"`try_spawn` normal", test_try_spawn_success},                          //
         {"`broadcast` dispatch", test_broadcast},                                //
