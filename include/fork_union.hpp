@@ -1247,11 +1247,28 @@ struct x86_yield_t {
  */
 struct x86_tpause_1us_t {
     inline void operator()() const noexcept {
-        __asm__ volatile( //
-            "xor %%eax,%%eax\n\t"
-            "mov $1000, %%ebx\n\t"
-            ".byte 0x66,0x0F,0xAE,0xFA" ::
-                : "eax", "ebx", "memory");
+        constexpr std::uint64_t cycles_per_us = 3 * 1000; // ? Around 3K cycles per microsecond
+        constexpr std::uint32_t sleep_level = 0;          // ? The deepest "C0.2" state
+
+        // Now we need to fetch the current time in cycles, add a delay, and sleep until that time is reached.
+        // Using intrinsics from `<x86intrin.h>` it may look like:
+        //
+        //      std::uint64_t const deadline = __rdtsc() + cycles_per_us;
+        //      _tpause(sleep_level, deadline);
+        //
+        // To avoid includes, using inline Assembly:
+        std::uint32_t rdtsc_lo, rdtsc_hi;
+        __asm__ __volatile__("rdtsc" : "=a"(rdtsc_lo), "=d"(rdtsc_hi));
+        std::uint64_t const deadline = ((static_cast<std::uint64_t>(rdtsc_hi) << 32) | rdtsc_lo) + cycles_per_us;
+        std::uint32_t const deadline_lo = static_cast<std::uint32_t>(deadline);
+        std::uint32_t const deadline_hi = static_cast<std::uint32_t>(deadline >> 32);
+        __asm__ __volatile__(               //
+            "mov    %[lo], %%eax\n\t"       // deadline_lo
+            "mov    %[hi], %%edx\n\t"       // deadline_hi
+            ".byte  0x66, 0x0F, 0xAE, 0xF3" // TPAUSE EBX
+            :
+            : [lo] "r"(deadline_lo), [hi] "r"(deadline_lo), "b"(sleep_level)
+            : "eax", "edx", "memory", "cc");
     }
 };
 
