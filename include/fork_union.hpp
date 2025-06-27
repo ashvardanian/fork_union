@@ -134,6 +134,25 @@
 #define _FU_UNLIKELY(x) (x)
 #endif
 
+/*  Detect target CPU architecture.
+ *  We'll only use it when compiling Inline Assembly code on GCC or Clang.
+ */
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+#define _FU_ARCH_AARCH64 1
+#else
+#define _FU_ARCH_AARCH64 0
+#endif
+#if defined(__x86_64__) || defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
+#define _FU_ARCH_X86_64 1
+#else
+#define _FU_ARCH_X86_64 0
+#endif
+#if defined(__riscv)
+#define _FU_ARCH_RISCV 1
+#else
+#define _FU_ARCH_RISCV 0
+#endif
+
 namespace ashvardanian {
 namespace fork_union {
 
@@ -1210,7 +1229,7 @@ concept is_unsafe_pool =   //
 
 #if defined(__GNUC__) || defined(__clang__) // We need inline assembly support
 
-#if defined(__aarch64__)
+#if _FU_ARCH_AARCH64
 
 struct aarch64_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("yield"); }
@@ -1225,9 +1244,11 @@ struct aarch64_yield_t {
 struct aarch64_wfet_t {
     inline void operator()() const noexcept {}
 };
-#endif
 
-#if defined(__x86_64__) || defined(__i386)
+#endif // _FU_ARCH_AARCH64
+
+#if _FU_ARCH_X86_64
+
 struct x86_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
@@ -1275,13 +1296,15 @@ struct x86_tpause_1us_t {
 #pragma GCC pop_options
 #pragma clang attribute pop
 
-#endif
+#endif // _FU_ARCH_X86_64
 
-#if defined(__riscv)
+#if _FU_ARCH_RISCV
+
 struct riscv_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
-#endif
+
+#endif // _FU_ARCH_RISCV
 
 #endif
 
