@@ -18,7 +18,23 @@ target_include_directories(
     fork_union INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
 )
 
-# Enable tests if requested
+# Pre-compiled libraries built from `c/lib.cpp`
+add_library(fork_union_dynamic SHARED c/lib.cpp)
+add_library(fork_union_static STATIC c/lib.cpp)
+
+# Require C++17 for the implementation libraries only
+set_target_properties(
+    fork_union_dynamic fork_union_static
+    PROPERTIES CXX_STANDARD 17
+               CXX_STANDARD_REQUIRED ON
+               CXX_EXTENSIONS OFF
+)
+
+# Re-use the public interface of the header-only target
+target_link_libraries(fork_union_dynamic PUBLIC fork_union)
+target_link_libraries(fork_union_static PUBLIC fork_union)
+
+# Tests & benchmarking scripts
 include(CTest)
 if (BUILD_TESTING)
     enable_testing()
@@ -34,6 +50,13 @@ install(
     EXPORT fork_unionTargets
     INCLUDES
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(
+    TARGETS fork_union_dynamic fork_union_static
+    EXPORT fork_unionTargets # same export set
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} # .so / .dylib
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} # .a
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} # .dll on Windows
 )
 
 # Export config files for find_package
@@ -65,11 +88,8 @@ if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
 
     # Find POSIX threads library
     find_package(Threads)
-    if (Threads_FOUND)
-        target_link_libraries(fork_union INTERFACE)
-    endif ()
 
-    # Find NUMA library
+    # Find libNUMA
     find_library(NUMA_LIBRARY NAMES numa)
     set(NUMA_FOUND FALSE)
     if (NUMA_LIBRARY)
@@ -79,7 +99,7 @@ if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
         message(STATUS "libNUMA not found – building without NUMA support")
     endif ()
 
-    # Find HugeTLBFS support
+    # Find HugeTLBFS
     find_path(HUGETLBFS_INCLUDE_DIR NAMES hugetlbfs.h)
     find_library(HUGETLBFS_LIBRARY NAMES hugetlbfs)
     include(FindPackageHandleStandardArgs)
