@@ -347,8 +347,8 @@ Those instructions, like [`WFET` on Arm](https://developer.arm.com/documentation
 | ------------------ | ------------ | ----------- | ---------- |
 | `x86_yield_t`      | x86          | `PAUSE`     | R3         |
 | `x86_tpause_1us_t` | x86+WAITPKG  | `TPAUSE`    | R3         |
-| `aarch64_yield_t`  | AArch64      | `YIELD`     | EL0        |
-| `aarch64_wfet_t`   | AArch64+WFXT | `WFET`      | EL0        |
+| `arm64_yield_t`    | AArch64      | `YIELD`     | EL0        |
+| `arm64_wfet_t`     | AArch64+WFXT | `WFET`      | EL0        |
 | `riscv_yield_t`    | RISC-V       | `PAUSE`     | U          |
 
 No kernel calls.
@@ -382,16 +382,26 @@ Rust benchmarking results for $N=128$ bodies and $I=1e6$ iterations:
 > ¹ Another common workload is "Parallel Reductions" covered in a separate [repository](https://github.com/ashvardanian/ParallelReductionsBenchmark).
 > ² When a combination of performance and efficiency cores is used, dynamic stealing may be more efficient than static slicing.
 
+You can rerun those benchmarks with the following commands:
+
+```bash
+cmake -B build_release -D CMAKE_BUILD_TYPE=Release
+cmake --build build_release --config Release
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_static build_release/scripts/fork_union_nbody
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_dynamic build_release/scripts/fork_union_nbody
+```
+
 ## Safety & Logic
 
-There are only 3 core atomic variables in this thread-pool, and some of them are practically optional.
+There are only 3 core atomic variables in this thread-pool, and 1 for dynamically-stealing tasks.
 Let's call every invocation of a `for_*` API - a "fork", and every exit from it a "join".
 
-| Variable          | Users Perspective            | Internal Usage                        |
-| :---------------- | :--------------------------- | :------------------------------------ |
-| `stop`            | Stop the entire thread-pool  | Tells workers when to exit the loop   |
-| `fork_generation` | "Forks" called since init    | Tells workers to wake up on new forks |
-| `threads_to_sync` | Threads not joined this fork | Tells main thread when workers finish |
+| Variable           | Users Perspective            | Internal Usage                        |
+| :----------------- | :--------------------------- | :------------------------------------ |
+| `stop`             | Stop the entire thread-pool  | Tells workers when to exit the loop   |
+| `fork_generation`  | "Forks" called since init    | Tells workers to wake up on new forks |
+| `threads_to_sync`  | Threads not joined this fork | Tells main thread when workers finish |
+| `dynamic_progress` | Progress within this fork    | Tells workers which jobs to take      |
 
 __Why don't we need atomics for "total_threads"?__
 The only way to change the number of threads is to `terminate` the entire thread-pool and then `try_spawn` it again.
@@ -420,7 +430,8 @@ To run the C++ tests, use CMake:
 ```bash
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
 cmake --build build_release --config Release
-ctest -C build_release
+ctest -C build_release                          # run all tests
+build_release/scripts/fork_union_nbody          # run the benchmarks
 ```
 
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:

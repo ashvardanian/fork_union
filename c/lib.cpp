@@ -14,7 +14,7 @@ namespace fu = ashvardanian::fork_union;
 using pool_variants_t = std::variant< //
 
 #if _FU_DETECT_ARCH_X86_64
-    fu::basic_pool<std::allocator<std::thread>, fu::x86_yield_t>,  //
+    fu::basic_pool<std::allocator<std::thread>, fu::x86_pause_t>,  //
     fu::basic_pool<std::allocator<std::thread>, fu::x86_tpause_t>, //
 #endif
 #if _FU_DETECT_ARCH_ARM64
@@ -22,13 +22,13 @@ using pool_variants_t = std::variant< //
     fu::basic_pool<std::allocator<std::thread>, fu::arm64_wfet_t>,  //
 #endif
 #if _FU_DETECT_ARCH_RISC5
-    fu::basic_pool<std::allocator<std::thread>, fu::riscv_yield_t>, //
+    fu::basic_pool<std::allocator<std::thread>, fu::risc5_pause_t>, //
 #endif
 
 #if FU_ENABLE_NUMA
     fu::linux_distributed_pool<fu::standard_yield_t>, //
 #if _FU_DETECT_ARCH_X86_64
-    fu::linux_distributed_pool<fu::x86_yield_t>,  //
+    fu::linux_distributed_pool<fu::x86_pause_t>,  //
     fu::linux_distributed_pool<fu::x86_tpause_t>, //
 #endif
 #if _FU_DETECT_ARCH_ARM64
@@ -36,7 +36,7 @@ using pool_variants_t = std::variant< //
     fu::linux_distributed_pool<fu::arm64_wfet_t>,  //
 #endif
 #if _FU_DETECT_ARCH_RISC5
-    fu::linux_distributed_pool<fu::riscv_yield_t>, //
+    fu::linux_distributed_pool<fu::risc5_pause_t>, //
 #endif
 #endif
     fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t> //
