@@ -2240,7 +2240,8 @@ struct linux_colocated_pool {
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
 
         // Execute on the current "main" thread
-        if (use_caller_thread) fork_trampoline_(fork_state_, {static_cast<thread_index_t>(0), colocation_index_});
+        if (use_caller_thread)
+            fork_trampoline_(fork_state_, colocated_thread_t {static_cast<thread_index_t>(0), colocation_index_});
 
         // Actually wait for everyone to finish
         micro_yield_t micro_yield;
@@ -2524,7 +2525,8 @@ struct linux_colocated_pool {
                 continue;
             }
 
-            pool->fork_trampoline_(pool->fork_state_, {global_thread_index, pool->colocation_index_});
+            pool->fork_trampoline_(pool->fork_state_,
+                                   colocated_thread_t {global_thread_index, pool->colocation_index_});
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
