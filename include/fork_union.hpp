@@ -67,6 +67,7 @@
 #include <cstddef> // `std::max_align_t`
 #include <cassert> // `assert`
 #include <cstring> // `std::strlen`
+#include <cstdio>  // `std::snprintf`
 #include <utility> // `std::exchange`, `std::addressof`
 #include <new>     // `std::hardware_destructive_interference_size`
 #include <array>   // `std::array`
