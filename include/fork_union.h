@@ -59,22 +59,13 @@ extern "C" {
 
 #pragma region - Types
 
-/**
- *  @brief A "prong" - is a tip of a "fork" - pinning "task" to a "thread" and "memory" location.
- *  @note On heterogeneous chips, different QoS can be differentiated via a "colocation" identifier.
- */
-typedef struct fu_prong_t {
-    size_t task;       // ? A.k.a. "task index" in [0, prongs_count)
-    size_t thread;     // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
-    size_t memory;     // ? A.k.a. NUMA "node ID" in [0, numa_nodes_count)
-    size_t colocation; // ? A.k.a. NUMA or QoS-specific "colocation ID"
-} fu_prong_t;
-
-typedef void *fu_pool_t;           /// ? A simple cross-platform opaque wrapper
+typedef int fu_bool_t;             // ? A simple boolean type, 0 for false, 1 for true
+typedef void *fu_pool_t;           // ? A simple cross-platform opaque wrapper
 typedef void *fu_lambda_context_t; // ? Type-punned pointer to the user-defined context
 
-typedef void (*fu_for_prong_func_t)(void *context, fu_prong_t prong);
-typedef void (*fu_for_slices_func_t)(void *context, fu_prong_t first, size_t count);
+typedef void (*fu_for_threads_t)(fu_lambda_context_t, size_t thread, size_t colocation);
+typedef void (*fu_for_prongs_t)(fu_lambda_context_t, size_t task, size_t thread, size_t colocation);
+typedef void (*fu_for_slices_t)(fu_lambda_context_t, size_t first, size_t count, size_t thread, size_t colocation);
 
 typedef enum fu_caller_exclusivity_t {
     fu_caller_inclusive_k,
@@ -91,13 +82,13 @@ typedef enum fu_caller_exclusivity_t {
  *  @retval `nullptr`, if the thread pool is not supported on the current platform.
  *  @retval "serial" for the default C++ STL-powered thread pool.
  *  @retval "numa" for the NUMA-aware thread pool on Linux-based systems.
- *  @retval "numa+tpause" for the NUMA-aware pool with `tpause` instruction with "waitpkg" CPU feature.
- *  @retval "numa+wfet" for ...
+ *  @retval "numa+x86tpause" for the NUMA-aware pool with `tpause` instruction with "waitpkg" CPU feature.
+ *  @retval "numa+aarch64wfet" for ...
  *  @retval "numa+x86pause" for ...
  *  @retval "numa+risc5pause" for ...
  *  @retval "numa+aarch64yield" for ...
  */
-char *fu_capabilities_string();
+char const *fu_capabilities_string();
 
 /**
  *  @brief Describes the number of physical CPU cores available on the system.
@@ -123,31 +114,60 @@ size_t fu_count_huge_pages();
 
 #pragma endregion - Metadata
 
+#pragma region - Memory
+
+/**
+ *  @brief Allocates memory on a specific NUMA node.
+ *  @param numa_node_index The index of the NUMA node to allocate memory on.
+ *  @param minimum_bytes Minimum number of bytes to allocate.
+ *  @param allocated_pointer Pointer to store the address of the allocated memory.
+ *  @param allocated_bytes Pointer to store the actual number of bytes allocated.
+ *  @retval 1 if the allocation was successful.
+ *  @retval 0 if the allocation failed.
+ */
+fu_bool_t fu_allocate_at_least(                   //
+    size_t numa_node_index, size_t minimum_bytes, //
+    void **allocated_pointer, size_t *allocated_bytes);
+
+/**
+ *  @brief Releases memory allocated on a specific NUMA node.
+ *  @param numa_node_index The index of the NUMA node where the memory was allocated.
+ *  @param pointer Pointer to the memory to be released.
+ *  @param bytes Number of bytes to release.
+ */
+void fu_free(size_t numa_node_index, void *pointer, size_t bytes);
+
+#pragma endregion - Memory
+
 #pragma region - Lifetime
 
 fu_pool_t *fu_pool_new();
 void fu_pool_delete(fu_pool_t *pool);
-bool fu_pool_spawn(fu_pool_t *pool, size_t threads, fu_caller_exclusivity_t exclusivity);
+fu_bool_t fu_pool_spawn(fu_pool_t *pool, size_t threads, fu_caller_exclusivity_t exclusivity);
 void fu_pool_sleep(fu_pool_t *pool, size_t micros);
 void fu_pool_terminate(fu_pool_t *pool);
+
+size_t fu_pool_count_colocations(fu_pool_t *pool);
+size_t fu_pool_count_threads(fu_pool_t *pool);
+size_t fu_pool_count_threads_in_colocation(fu_pool_t *pool, size_t colocation_index);
 
 #pragma endregion - Lifetime
 
 #pragma region - Primary API
 
-void fu_pool_for_threads(fu_pool_t *pool, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_func_t callback, fu_lambda_context_t context);
+void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context);
+void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
+void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
+void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context);
 
 #pragma endregion - Primary API
 
 #pragma region - Flexible API
 
-void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_unsafe_for_n(fu_pool_t *pool, size_t n, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_unsafe_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prong_func_t callback, fu_lambda_context_t context);
-void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_func_t callback, fu_lambda_context_t context);
+void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context);
+void fu_pool_unsafe_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
+void fu_pool_unsafe_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
+void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context);
 void fu_pool_unsafe_join(fu_pool_t *pool);
 
 #pragma endregion - Flexible API
