@@ -159,9 +159,10 @@ namespace fork_union {
 
 #pragma region - Helpers and Constants
 
-using numa_node_id_t = int; // ? A.k.a. NUMA node ID, in [0, numa_max_node())
-using numa_core_id_t = int; // ? A.k.a. CPU core ID, in [0, threads_count)
-using qos_level_t = int;    // ? Quality of Service, like: "performance", "efficiency", "low-power"
+using numa_node_id_t = int;   // ? A.k.a. NUMA node ID, in [0, numa_max_node())
+using numa_core_id_t = int;   // ? A.k.a. CPU core ID, in [0, threads_count)
+using numa_socket_id_t = int; // ? A.k.a. physical CPU socket ID
+using qos_level_t = int;      // ? Quality of Service, like: "performance", "efficiency", "low-power"
 
 /**
  *  @brief Defines variable alignment to avoid false sharing.
@@ -1580,6 +1581,7 @@ struct numa_node {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
 
     numa_node_id_t node_id {-1};                       // ? Unique NUMA node ID, in [0, numa_max_node())
+    numa_socket_id_t socket_id {-1};                   // ? Physical CPU socket ID
     std::size_t memory_size {0};                       // ? RAM volume in bytes
     numa_core_id_t const *first_core_id {nullptr};     // ? Pointer to the first core ID in the `core_ids` array
     std::size_t core_count {0};                        // ? Number of items in `core_ids` array
@@ -1587,6 +1589,37 @@ struct numa_node {
 };
 
 using numa_node_t = numa_node<>;
+
+/**
+ *  @brief Fetches the socket ID for a given CPU core.
+ *  @param[in] core_id The CPU core ID to query.
+ *  @retval Socket ID (>= 0) if successful.
+ *  @retval -1 if failed.
+ */
+inline numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
+
+    char socket_path[256];
+    int path_result = std::snprintf(      //
+        socket_path, sizeof(socket_path), //
+        "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", core_id);
+    if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(socket_path)) return -1; // ? Path too long
+
+    FILE *socket_file = ::fopen(socket_path, "r");
+    if (!socket_file) return -1; // ? Can't read socket info
+
+    int socket_id = -1;
+    if (::fscanf(socket_file, "%d", &socket_id) != 1) socket_id = -1; // ? Failed to parse
+    ::fclose(socket_file);
+    return socket_id;
+}
+
+template <typename value_type_, typename comparator_type_ = std::less<value_type_>>
+void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = comparator_type_()) noexcept {
+    assert(array != nullptr && "Array must not be null");
+    for (std::size_t i = 0; i < size - 1; ++i)
+        for (std::size_t j = 0; j < size - i - 1; ++j)
+            if (comp(array[j + 1], array[j])) std::swap(array[j], array[j + 1]);
+}
 
 /**
  *  @brief NUMA topology descriptor: describing memory pools and core counts next to them.
@@ -1714,6 +1747,7 @@ struct numa_topology {
             node.first_core_id = core_ids_ptr + core_index;
             node.core_count = static_cast<std::size_t>(::numa_bitmask_weight(numa_mask));
             assert(node.core_count > 0 && "Node is known to have at least one core");
+            node.socket_id = get_socket_id_for_core(node.first_core_id[0]);
 
             // Most likely, this will fill `core_ids_ptr` with `std::iota`-like values
             for (std::size_t bit_offset = 0; bit_offset < numa_mask->size; ++bit_offset)
@@ -1721,9 +1755,7 @@ struct numa_topology {
                     core_ids_ptr[core_index++] = static_cast<numa_core_id_t>(bit_offset);
 
             // Fetch Huge Page sizes for this NUMA node
-            node.page_sizes = ram_page_settings<max_page_sizes_k>(node_id);
-            node.page_sizes.try_harvest(); // ! We are not raising the failure - Huge Pages are optional
-
+            node.page_sizes.try_harvest(node_id); // ! We are not raising the failure - Huge Pages are optional
             node_index++;
         }
 
@@ -1732,8 +1764,15 @@ struct numa_topology {
         node_core_ids_ = core_ids_ptr;
         nodes_count_ = fetched_nodes;
         cores_count_ = fetched_cores;
-
         ::numa_free_cpumask(numa_mask); // ? Clean up
+
+        // Let's sort all the nodes by their socket ID, then by number of cores, then by first core ID
+        bubble_sort(nodes_, nodes_count_, [](numa_node_t const &a, numa_node_t const &b) noexcept {
+            if (a.socket_id != b.socket_id) return a.socket_id < b.socket_id;
+            if (a.core_count != b.core_count) return a.core_count > b.core_count; // ? Sort by descending core count
+            return a.first_core_id[0] < b.first_core_id[0];                       // ? Sort by first core ID
+        });
+
         return true;
 
     failed_harvest:
