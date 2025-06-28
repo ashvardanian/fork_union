@@ -97,9 +97,9 @@
 #include <numaif.h>     // `mbind` manual assignment of `mmap` pages
 #include <pthread.h>    // `pthread_getaffinity_np`
 #include <unistd.h>     // `gettid`
-#include <hugetlbfs.h>  // `gethugepagesizes`
 #include <sys/mman.h>   // `mmap`, `MAP_PRIVATE`, `MAP_ANONYMOUS`
 #include <linux/mman.h> // `MAP_HUGE_2MB`, `MAP_HUGE_1GB`
+#include <dirent.h>     // `opendir`, `readdir`, `closedir`
 #endif
 
 /**
@@ -1429,20 +1429,23 @@ inline capabilities_t cpu_capabilities() noexcept {
 
 #pragma region - NUMA Pools
 
-#if FU_ENABLE_NUMA
-
 enum numa_pin_granularity_t {
     numa_pin_to_core_k = 0,
     numa_pin_to_node_k,
 };
 
 struct ram_page_setting_t {
-    std::size_t size_bytes {0};      // ? Huge page size in bytes, e.g. 4 KB, 2 MB, or 1 GB
+    std::size_t bytes_per_page {0};  // ? Huge page size in bytes, e.g. 4 KB, 2 MB, or 1 GB
     std::size_t available_pages {0}; // ? Number of pages available for this size, 0 if not available
+    std::size_t free_pages {0};      // ? Number of pages available and unused, 0 if not available
 };
 
 /**
  *  @brief Describes the configured & supported (by OS & CPU) memory pages sizes.
+ *
+ *  This class avoids HugeTLBfs in favor of a direct access to the @b `/sys` filesystem.
+ *  Aside from fetching the stats, it also allows us to change settings if admin privileges
+ *  are granted to running process.
  *
  *  @section Huge Pages & Transparent Huge Pages
  *
@@ -1460,48 +1463,109 @@ struct ram_page_setting_t {
  *  To benefit from those, some applications rely on "Transparent Huge Pages" @b (THP),
  *  which are automatically allocated by the kernel. Such implicit behaviour isn't
  *  great for performance-oriented applications, so the `linux_numa_allocator` provides
- *  a @b `fetch_max_huge_size` API
+ *  a @b `fetch_max_huge_size` API.
  *
  *  @see https://docs.kernel.org/admin-guide/mm/hugetlbpage.html
  */
-template <std::size_t max_page_sizes_ = 32>
-struct ram_page_settings {
+template <std::size_t max_page_sizes_ = 4>
+class ram_page_settings {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
-    std::array<ram_page_setting_t, max_page_sizes_k> sizes {0}; // ? Huge page sizes in bytes
-    std::size_t count_sizes {0};                                // ? Number of supported huge page sizes
+    std::array<ram_page_setting_t, max_page_sizes_k> sizes_ {0}; // ? Huge page sizes in bytes
+    std::size_t count_sizes_ {0};                                // ? Number of supported huge page sizes
+    numa_node_id_t node_id_ {-1};                                // ? NUMA node ID, -1 if not set
+  public:
+    explicit ram_page_settings(numa_node_id_t node_id = -1) noexcept : node_id_(node_id) {}
 
     /**
-     *  @brief Fetches the maximum supported huge page size on the current system.
-     *  @retval `numa_pagesize()` if huge pages are not supported or not available.
-     *  @retval 2 MB is the most common huge page size on Linux systems.
-     *
-     *  Being supported by the kernel, doesn't mean that pages of that size have
-     *  a valid mount point. That can be checked with @b `hugetlbfs_find_path_for_size`.
+     *  @brief Fetches all available huge page sizes for the given NUMA node.
+     *  @note Kernel support doesn't mean that pages of that size have a valid mount point.
      */
     bool try_harvest() noexcept {
-        // glibc ≥ 2.10 supports `gethugepagesizes`
-        long count = ::gethugepagesizes(nullptr, 0);
-        if (count <= 0) return false;
+        assert(node_id_ >= 0 && "NUMA node ID must be non-negative");
+        std::size_t count_sizes = 0; // ? Number of sizes found
 
-        std::array<long, 32> buf {};
-        if (count > static_cast<long>(buf.size())) count = buf.size();
-        ::gethugepagesizes(buf.data(), count);
+        // Build path to NUMA node's hugepages directory
+        char hugepages_path[256];
+        int path_result = std::snprintf(            //
+            hugepages_path, sizeof(hugepages_path), //
+            "/sys/devices/system/node/node%d/hugepages", node_id_);
+        if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(hugepages_path))
+            return false; // ? Path too long
 
-        // Export the settings into the `sizes` array
-        for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i) {
-            if (buf[i] <= 0) continue; // ? Skip invalid sizes
-            sizes[i].size_bytes = static_cast<std::size_t>(buf[i]);
+        DIR *hugepages_dir = ::opendir(hugepages_path);
+        if (!hugepages_dir) return false; // ? Can't open NUMA node hugepages directory
+
+        struct dirent *entry;
+        while ((entry = ::readdir(hugepages_dir)) != nullptr && count_sizes < max_page_sizes_k) {
+            // Look for directories named "hugepages-*kB"
+            if (entry->d_type != DT_DIR) continue;
+            if (::strncmp(entry->d_name, "hugepages-", 10) != 0) continue;
+
+            // Extract size from directory name (e.g., "hugepages-2048kB" -> 2048)
+            char const *size_start = entry->d_name + 10; // ? Skip "hugepages-"
+            char *size_end = nullptr;
+            std::size_t bytes_per_page_kb = static_cast<std::size_t>(::strtoull(size_start, &size_end, 10));
+
+            // Verify the suffix is "kB"
+            if (!size_end || std::strcmp(size_end, "kB") != 0) continue;
+            if (bytes_per_page_kb == 0) continue; // ? Invalid size
+
+            std::size_t const bytes_per_page = bytes_per_page_kb * 1024;
+
+            // Read NUMA-node-specific huge page statistics
+            char nr_hugepages_path[512];
+            char free_hugepages_path[512];
+
+            path_result = std::snprintf(                      //
+                nr_hugepages_path, sizeof(nr_hugepages_path), //
+                "%s/%s/nr_hugepages", hugepages_path, entry->d_name);
+            if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(nr_hugepages_path))
+                continue; // ? Path too long
+
+            path_result = std::snprintf(                          //
+                free_hugepages_path, sizeof(free_hugepages_path), //
+                "%s/%s/free_hugepages", hugepages_path, entry->d_name);
+            if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(free_hugepages_path))
+                continue; // ? Path too long
+
+            // Read allocated huge pages count
+            FILE *nr_file = ::fopen(nr_hugepages_path, "r");
+            if (!nr_file) continue; // ? Can't read allocation count
+
+            std::size_t allocated_pages = 0;
+            std::size_t free_pages = 0;
+            if (::fscanf(nr_file, "%zu", &allocated_pages) != 1) {
+                ::fclose(nr_file);
+                continue; // ? Failed to parse allocated count
+            }
+            ::fclose(nr_file);
+
+            // Read free huge pages count
+            FILE *free_file = ::fopen(free_hugepages_path, "r");
+            if (free_file) {
+                if (::fscanf(free_file, "%zu", &free_pages) != 1) {
+                    free_pages = 0; // ? Assume none are free if parsing fails
+                }
+                ::fclose(free_file);
+            }
+
+            // Add to our list with NUMA node information
+            sizes_[count_sizes].bytes_per_page = bytes_per_page;
+            sizes_[count_sizes].available_pages = allocated_pages;
+            sizes_[count_sizes].free_pages = free_pages;
+            ++count_sizes;
         }
-        count_sizes = static_cast<std::size_t>(count);
+        ::closedir(hugepages_dir);
+        count_sizes_ = count_sizes;
         return true;
     }
 
-    std::size_t size() const noexcept { return count_sizes; }
-    ram_page_setting_t const *begin() const noexcept { return sizes.data(); }
-    ram_page_setting_t const *end() const noexcept { return sizes.data() + count_sizes; }
+    std::size_t size() const noexcept { return count_sizes_; }
+    ram_page_setting_t const *begin() const noexcept { return sizes_.data(); }
+    ram_page_setting_t const *end() const noexcept { return sizes_.data() + count_sizes_; }
     ram_page_setting_t const &operator[](std::size_t const index) const noexcept {
-        assert(index < count_sizes && "Index is out of bounds");
-        return sizes[index];
+        assert(index < count_sizes_ && "Index is out of bounds");
+        return sizes_[index];
     }
 };
 
@@ -1511,32 +1575,18 @@ using ram_page_settings_t = ram_page_settings<>;
  *  @brief Describes a NUMA node, containing its ID, memory size, and core IDs.
  *  @sa Views different slices of the `numa_topology` structure.
  */
-struct numa_node_t {
-    numa_node_id_t node_id {-1};                   // ? Unique NUMA node ID, in [0, numa_max_node())
-    std::size_t memory_size {0};                   // ? RAM volume in bytes
-    numa_core_id_t const *first_core_id {nullptr}; // ? Pointer to the first core ID in the `core_ids` array
-    std::size_t core_count {0};                    // ? Number of items in `core_ids` array
+template <std::size_t max_page_sizes_ = 4>
+struct numa_node {
+    static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
+
+    numa_node_id_t node_id {-1};                       // ? Unique NUMA node ID, in [0, numa_max_node())
+    std::size_t memory_size {0};                       // ? RAM volume in bytes
+    numa_core_id_t const *first_core_id {nullptr};     // ? Pointer to the first core ID in the `core_ids` array
+    std::size_t core_count {0};                        // ? Number of items in `core_ids` array
+    ram_page_settings<max_page_sizes_k> page_sizes {}; // ? Huge page sizes available on this NUMA node
 };
 
-/**
- *  @brief Used inside `linux_colocated_pool` to describe a pinned thread.
- *
- *  On Linux, we can advise the scheduler on the importance of certain execution threads.
- *  For that we need to know the thread IDs - `pid_t`, which is not the same as `pthread_t`,
- *  and not a process ID, but a thread ID... counter-intuitive, I know.
- *  @see https://man7.org/linux/man-pages/man2/gettid.2.html
- *
- *  That `pid_t` can only be retrieved from inside the thread via `gettid` system call,
- *  so we need some shared memory to make those IDs visible to other threads. Moreover,
- *  we need to safeguard the reads/writes with atomics to avoid race conditions.
- *  @see https://stackoverflow.com/a/558815
- */
-struct alignas(default_alignment_k) numa_pthread_t {
-    std::atomic<pthread_t> handle {};
-    std::atomic<pid_t> id {};
-    numa_core_id_t core_id {-1};
-    qos_level_t qos_level {-1}; // TODO: Populate from VFS, if available
-};
+using numa_node_t = numa_node<>;
 
 /**
  *  @brief NUMA topology descriptor: describing memory pools and core counts next to them.
@@ -1545,22 +1595,20 @@ struct alignas(default_alignment_k) numa_pthread_t {
  *  Intel "Sierra Forest"-like CPUs with 288 cores with up to 8 sockets per node, this structure
  *  can easily grow to 10 KB.
  */
-template <typename allocator_type_ = std::allocator<char>>
+template <std::size_t max_page_sizes_ = 4, typename allocator_type_ = std::allocator<char>>
 struct numa_topology {
 
     using allocator_t = allocator_type_;
     using cores_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<int>;
     using nodes_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<numa_node_t>;
+    static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
 
   private:
-    static constexpr std::size_t max_huge_page_sizes_k = 32;
-
     numa_node_t *nodes_ {nullptr};
     numa_core_id_t *node_core_ids_ {nullptr}; // ? Unsigned integers in [0, threads_count), grouped by NUMA node
     std::size_t nodes_count_ {0};             // ? Number of NUMA nodes
     std::size_t cores_count_ {0};             // ? Total number of cores in all nodes
     allocator_t allocator_ {};
-    std::array<std::size_t, max_huge_page_sizes_k> huge_page_sizes_ {0}; // ? Huge page sizes in bytes
 
   public:
     constexpr numa_topology() noexcept = default;
@@ -1604,9 +1652,9 @@ struct numa_topology {
 
     std::size_t nodes_count() const noexcept { return nodes_count_; }
     std::size_t threads_count() const noexcept { return cores_count_; }
-    numa_node_t node(std::size_t const node_id) const noexcept {
-        assert(node_id < nodes_count_ && "Node ID is out of bounds");
-        return nodes_[node_id];
+    numa_node_t const &node(std::size_t const node_index) const noexcept {
+        assert(node_index < nodes_count_ && "Node ID is out of bounds");
+        return nodes_[node_index];
     }
 
     /**
@@ -1615,6 +1663,7 @@ struct numa_topology {
      *  @retval true if the harvest was successful and the topology is ready to use.
      */
     bool try_harvest() noexcept {
+#if FU_ENABLE_NUMA
         struct bitmask *numa_mask = nullptr;
         numa_node_t *nodes_ptr = nullptr;
         numa_core_id_t *core_ids_ptr = nullptr;
@@ -1671,6 +1720,10 @@ struct numa_topology {
                 if (::numa_bitmask_isbitset(numa_mask, bit_offset))
                     core_ids_ptr[core_index++] = static_cast<numa_core_id_t>(bit_offset);
 
+            // Fetch Huge Page sizes for this NUMA node
+            node.page_sizes = ram_page_settings<max_page_sizes_k>(node_id);
+            node.page_sizes.try_harvest(); // ! We are not raising the failure - Huge Pages are optional
+
             node_index++;
         }
 
@@ -1687,6 +1740,7 @@ struct numa_topology {
         if (nodes_ptr) nodes_alloc.deallocate(nodes_ptr, fetched_nodes);
         if (core_ids_ptr) cores_alloc.deallocate(core_ids_ptr, fetched_cores);
         if (numa_mask) ::numa_free_cpumask(numa_mask);
+#endif // FU_ENABLE_NUMA
         return false;
     }
 
@@ -1735,7 +1789,6 @@ struct numa_topology {
         node_core_ids_ = scratch_core_ids;
         nodes_count_ = other.nodes_count_;
         cores_count_ = other.cores_count_;
-        huge_page_sizes_ = other.huge_page_sizes_;
         return true;
     }
 };
@@ -1801,6 +1854,7 @@ struct linux_numa_allocator {
      *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
      */
     allocation_result<value_type *, size_type> allocate_at_least(size_type size) noexcept {
+#if FU_ENABLE_NUMA
         size_type const size_bytes = size * sizeof(value_type);
         size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
         size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
@@ -1812,9 +1866,15 @@ struct linux_numa_allocator {
         value_type *result_ptr = allocate(aligned_size);
         if (!result_ptr) return {}; // ! Allocation failed
         return {result_ptr, aligned_size};
+#else
+        return {};
+#endif
     }
 
     value_type *allocate(size_type size) noexcept {
+        void *result_ptr = nullptr;
+
+#if FU_ENABLE_NUMA
         size_type const size_bytes = size * sizeof(value_type);
         size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
         size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
@@ -1831,7 +1891,7 @@ struct linux_numa_allocator {
         else { return nullptr; } // ! Unsupported page size
 
         // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
-        void *result_ptr = ::mmap(nullptr, aligned_size_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+        result_ptr = ::mmap(nullptr, aligned_size_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
         if (result_ptr == MAP_FAILED) return nullptr; // ! Allocation failed
 
         // Pin the memory - that may require an extra allocation for `node_mask` on some systems
@@ -1839,7 +1899,7 @@ struct linux_numa_allocator {
         ::bitmask node_mask_as_bitset;
         node_mask_as_bitset.size = sizeof(node_mask) * 8;
         node_mask_as_bitset.maskp = &node_mask.n[0];
-        numa_bitmask_setbit(&node_mask_as_bitset, node_id);
+        ::numa_bitmask_setbit(&node_mask_as_bitset, node_id);
         int mbind_flags;
 #if defined(MPOL_F_STATIC_NODES)
         mbind_flags = MPOL_F_STATIC_NODES;
@@ -1851,6 +1911,8 @@ struct linux_numa_allocator {
             result_ptr, aligned_size_bytes, //
             MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1, mbind_flags);
         if (binding_status < 0) return nullptr; // ! Binding failed
+
+#endif // FU_ENABLE_NUMA
 
         return static_cast<value_type *>(result_ptr);
     }
@@ -1869,6 +1931,28 @@ struct linux_numa_allocator {
 };
 
 using linux_numa_allocator_t = linux_numa_allocator<>;
+
+#if FU_ENABLE_NUMA
+
+/**
+ *  @brief Used inside `linux_colocated_pool` to describe a pinned thread.
+ *
+ *  On Linux, we can advise the scheduler on the importance of certain execution threads.
+ *  For that we need to know the thread IDs - `pid_t`, which is not the same as `pthread_t`,
+ *  and not a process ID, but a thread ID... counter-intuitive, I know.
+ *  @see https://man7.org/linux/man-pages/man2/gettid.2.html
+ *
+ *  That `pid_t` can only be retrieved from inside the thread via `gettid` system call,
+ *  so we need some shared memory to make those IDs visible to other threads. Moreover,
+ *  we need to safeguard the reads/writes with atomics to avoid race conditions.
+ *  @see https://stackoverflow.com/a/558815
+ */
+struct alignas(default_alignment_k) numa_pthread_t {
+    std::atomic<pthread_t> handle {};
+    std::atomic<pid_t> id {};
+    numa_core_id_t core_id {-1};
+    qos_level_t qos_level {-1}; // TODO: Populate from VFS, if available
+};
 
 #pragma region - Linux Colocated Pool
 
@@ -2020,7 +2104,7 @@ struct linux_colocated_pool {
      *  @note This is the de-facto @b constructor - you only call it again after `terminate`.
      *  @sa Other overloads of `try_spawn` that allow to specify the number of threads.
      */
-    bool try_spawn(numa_node_t const node, caller_exclusivity_t const exclusivity = caller_inclusive_k) noexcept {
+    bool try_spawn(numa_node_t const &node, caller_exclusivity_t const exclusivity = caller_inclusive_k) noexcept {
         return try_spawn(node, node.core_count, exclusivity);
     }
 
@@ -2046,7 +2130,7 @@ struct linux_colocated_pool {
      *  You'd be better off using exactly the number of cores available on the NUMA node and pinning
      *  them to individual cores with @b `numa_pin_to_core_k` granularity.
      */
-    bool try_spawn(numa_node_t const node, thread_index_t const threads,
+    bool try_spawn(numa_node_t const &node, thread_index_t const threads,
                    caller_exclusivity_t const exclusivity = caller_inclusive_k,
                    numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k,
                    thread_index_t const first_thread = 0, index_t const colocation_index = 0) noexcept {
