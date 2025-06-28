@@ -54,7 +54,7 @@
  *
  *  On x86, Arm, and RISC-V architectures, depending on the CPU features available, the library also
  *  exposes cheaper @b "busy-waiting" mechanisms, such as `tpause`, `wfet`, & `yield` instructions.
- *  @sa `aarch64_yield_t`, `aarch64_wfet_t`, `x86_yield_t`, `x86_tpause_1us_t`, `riscv_yield_t`.
+ *  @sa `arm64_yield_t`, `arm64_wfet_t`, `x86_yield_t`, `x86_tpause_t`, `risc5_yield_t`.
  *
  *  Minimum version of C++ 14 is needed to allow an `auto` placeholder type for return values.
  *  This significantly reduces code bloat needed to infer the return type of lambdas.
@@ -138,20 +138,20 @@
 /*  Detect target CPU architecture.
  *  We'll only use it when compiling Inline Assembly code on GCC or Clang.
  */
-#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#define _FU_ARCH_AARCH64 1
+#if defined(__arm64__) || defined(__arm64__) || defined(_M_ARM64)
+#define _FU_DETECT_ARCH_ARM64 1
 #else
-#define _FU_ARCH_AARCH64 0
+#define _FU_DETECT_ARCH_ARM64 0
 #endif
 #if defined(__x86_64__) || defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
-#define _FU_ARCH_X86_64 1
+#define _FU_DETECT_ARCH_X86_64 1
 #else
-#define _FU_ARCH_X86_64 0
+#define _FU_DETECT_ARCH_X86_64 0
 #endif
 #if defined(__riscv)
-#define _FU_ARCH_RISCV 1
+#define _FU_DETECT_ARCH_RISC5 1
 #else
-#define _FU_ARCH_RISCV 0
+#define _FU_DETECT_ARCH_RISC5 0
 #endif
 
 namespace ashvardanian {
@@ -1271,9 +1271,9 @@ concept is_unsafe_pool =   //
 
 #if defined(__GNUC__) || defined(__clang__) // We need inline assembly support
 
-#if _FU_ARCH_AARCH64
+#if _FU_DETECT_ARCH_ARM64
 
-struct aarch64_yield_t {
+struct arm64_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("yield"); }
 };
 
@@ -1283,15 +1283,26 @@ struct aarch64_yield_t {
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
  */
-struct aarch64_wfet_t {
-    inline void operator()() const noexcept {}
+struct arm64_wfet_t {
+    inline void operator()() const noexcept {
+        std::uint64_t cntfrq_el0, cntvct_el0;
+        // Read the timer frequency (ticks per second)
+        __asm__ __volatile__("mrs %0, CNTFRQ_EL0" : "=r"(cntfrq_el0));
+        // Convert one micro-second to timer ticks
+        std::uint64_t const ticks_per_us = cntfrq_el0 / 1'000'000;
+        // Fetch current counter value and build the deadline
+        __asm__ __volatile__("mrs %0, CNTVCT_EL0" : "=r"(cntvct_el0));
+        std::uint64_t const deadline = cntvct_el0 + ticks_per_us;
+        // Enter timed wait: WFET <Xt>.
+        __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
+    }
 };
 
-#endif // _FU_ARCH_AARCH64
+#endif // _FU_DETECT_ARCH_ARM64
 
-#if _FU_ARCH_X86_64
+#if _FU_DETECT_ARCH_X86_64
 
-struct x86_yield_t {
+struct x86_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
@@ -1308,7 +1319,7 @@ struct x86_yield_t {
  *  - `MWAITX` in `MONITORX` ISA on AMD - used for power management, requires RING 0 privilege.
  *  - `TPAUSE` in `WAITPKG` - time-based pause instruction, available in RING 3.
  */
-struct x86_tpause_1us_t {
+struct x86_tpause_t {
     inline void operator()() const noexcept {
         constexpr std::uint64_t cycles_per_us = 3 * 1000; // ? Around 3K cycles per microsecond
         constexpr std::uint32_t sleep_level = 0;          // ? The deepest "C0.2" state
@@ -1338,15 +1349,15 @@ struct x86_tpause_1us_t {
 #pragma GCC pop_options
 #pragma clang attribute pop
 
-#endif // _FU_ARCH_X86_64
+#endif // _FU_DETECT_ARCH_X86_64
 
-#if _FU_ARCH_RISCV
+#if _FU_DETECT_ARCH_RISC5
 
-struct riscv_yield_t {
+struct risc5_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#endif // _FU_ARCH_RISCV
+#endif // _FU_DETECT_ARCH_RISC5
 
 #endif
 
