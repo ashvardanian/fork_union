@@ -224,6 +224,24 @@ enum class mood_t {
     die_k,       // ? The thread is about to die, we must exit the loop peacefully
 };
 
+/**
+ *  @brief Describes all the special library features.
+ */
+enum capabilities_t {
+    capabilities_unknown_k = 0,
+
+    // CPU-specific capabilities:
+    capability_x86_pause_k = 1 << 1,   // ? x86
+    capability_x86_tpause_k = 1 << 2,  // ? x86-64 with `WAITPKG` support
+    capability_arm_yield_k = 1 << 3,   // ? Arm
+    capability_arm_wfet_k = 1 << 4,    // ? AArch64 with `WFET` support
+    capability_riscv_pause_k = 1 << 5, // ? RISC-V
+
+    // RAM-specific capabilities:
+    capability_numa_aware_k = 1 << 10, // ? NUMA-aware memory allocations
+    capability_huge_pages_k = 1 << 11, // ? Reducing TLB pressure with huge pages
+};
+
 struct standard_yield_t {
     inline void operator()() const noexcept { std::this_thread::yield(); }
 };
@@ -1360,6 +1378,52 @@ struct risc5_pause_t {
 #endif // _FU_DETECT_ARCH_RISC5
 
 #endif
+
+/**
+ *  @brief Represents the CPU capabilities for hardware-friendly yielding.
+ *  @note Combine with @b `memory_capabilities()` to get the full set of library capabilities.
+ */
+inline capabilities_t cpu_capabilities() noexcept {
+    capabilities_t caps = capabilities_unknown_k;
+
+#if _FU_DETECT_ARCH_X86_64
+
+    // Check for basic PAUSE instruction support (always available on x86-64)
+    caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
+
+    // CPUID to check for WAITPKG support (TPAUSE instruction)
+    std::uint32_t eax, ebx, ecx, edx;
+
+    // CPUID leaf 7, sub-leaf 0 for structured extended feature flags
+    eax = 7, ecx = 0;
+    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(eax), "c"(ecx) : "memory");
+
+    // WAITPKG is bit 5 in ECX
+    if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+
+#elif _FU_DETECT_ARCH_ARM64
+
+    // Basic YIELD is always available on AArch64
+    caps = static_cast<capabilities_t>(caps | capability_arm_yield_k);
+
+    // Check for WFET support via ID_AA64ISAR2_EL1 register
+    std::uint64_t id_aa64isar2_el0;
+    __asm__ __volatile__("mrs %0, ID_AA64ISAR2_EL0" : "=r"(id_aa64isar2_el0) : : "memory");
+
+    // WFET is bits [3:0], value 2 indicates WFET support
+    std::uint64_t const wfet_field = id_aa64isar2_el0 & 0xF;
+    if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm_wfet_k);
+
+#elif _FU_DETECT_ARCH_RISC5
+
+    // Basic PAUSE is available on RISC-V with Zihintpause extension
+    // For now, we assume it's available if we're on RISC-V
+    caps = static_cast<capabilities_t>(caps | capability_riscv_pause_k);
+
+#endif
+
+    return caps;
+}
 
 #pragma endregion - Hardware Friendly Yield
 
