@@ -11,8 +11,6 @@
 
 #![no_std]
 
-use core::ptr;
-
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -263,7 +261,10 @@ impl Drop for ThreadPool {
 }
 
 /// Operation object for parallel thread execution.
-pub struct ForThreadsOperation<'a, F> {
+pub struct ForThreadsOperation<'a, F>
+where
+    F: Fn(usize, usize) + Sync,
+{
     pool: &'a mut ThreadPool,
     function: F,
 }
@@ -293,7 +294,10 @@ where
 }
 
 /// Operation object for parallel task execution with static load balancing.
-pub struct ForNOperation<'a, F> {
+pub struct ForNOperation<'a, F>
+where
+    F: Fn(Prong) + Sync,
+{
     pool: &'a mut ThreadPool,
     n: usize,
     function: F,
@@ -329,7 +333,10 @@ where
 }
 
 /// Operation object for parallel task execution with dynamic work-stealing.
-pub struct ForNDynamicOperation<'a, F> {
+pub struct ForNDynamicOperation<'a, F>
+where
+    F: Fn(Prong) + Sync,
+{
     pool: &'a mut ThreadPool,
     n: usize,
     function: F,
@@ -365,7 +372,10 @@ where
 }
 
 /// Operation object for parallel slice execution.
-pub struct ForSlicesOperation<'a, F> {
+pub struct ForSlicesOperation<'a, F>
+where
+    F: Fn(Prong, usize) + Sync,
+{
     pool: &'a mut ThreadPool,
     n: usize,
     function: F,
@@ -439,14 +449,14 @@ where
 /// Helper function to visit every element exactly once with mutable access.
 pub fn for_each_prong_mut<T, F>(pool: &mut ThreadPool, data: &mut [T], function: F)
 where
-    T: Send,
-    F: Fn(&mut T, Prong) + Sync,
+    T: Send + Sync,
+    F: Fn(&mut T, Prong) + Sync + Send,
 {
-    let base_ptr = data.as_mut_ptr();
+    let base_ptr = data.as_mut_ptr() as usize;
     let n = data.len();
 
-    let _operation = pool.for_n(n, move |prong| unsafe {
-        let item = &mut *base_ptr.add(prong.task_index);
+    let _operation = pool.for_n(n, move |prong| {
+        let item = unsafe { &mut *(base_ptr as *mut T).add(prong.task_index) };
         function(item, prong);
     });
 }
@@ -454,14 +464,14 @@ where
 /// Helper function to visit every element exactly once with dynamic work-stealing.
 pub fn for_each_prong_mut_dynamic<T, F>(pool: &mut ThreadPool, data: &mut [T], function: F)
 where
-    T: Send,
-    F: Fn(&mut T, Prong) + Sync,
+    T: Send + Sync,
+    F: Fn(&mut T, Prong) + Sync + Send,
 {
-    let base_ptr = data.as_mut_ptr();
+    let base_ptr = data.as_mut_ptr() as usize;
     let n = data.len();
 
-    let _operation = pool.for_n_dynamic(n, move |prong| unsafe {
-        let item = &mut *base_ptr.add(prong.task_index);
+    let _operation = pool.for_n_dynamic(n, move |prong| {
+        let item = unsafe { &mut *(base_ptr as *mut T).add(prong.task_index) };
         function(item, prong);
     });
 }
@@ -473,6 +483,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::vec::Vec;
 
     #[inline]
     fn hw_threads() -> usize {
@@ -482,7 +493,7 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let caps = capabilities_string();
-        println!("Capabilities: {:?}", caps);
+        std::println!("Capabilities: {:?}", caps);
         assert!(caps.is_some());
     }
 
@@ -493,9 +504,12 @@ mod tests {
         let colocations = count_colocations();
         let qos = count_quality_levels();
 
-        println!(
+        std::println!(
             "Cores: {}, NUMA: {}, Colocations: {}, QoS: {}",
-            cores, numa, colocations, qos
+            cores,
+            numa,
+            colocations,
+            qos
         );
         assert!(cores > 0);
     }
@@ -512,11 +526,8 @@ mod tests {
         let count_threads = hw_threads();
         let mut pool = spawn(count_threads);
 
-        let visited = Arc::new(
-            (0..count_threads)
-                .map(|_| AtomicBool::new(false))
-                .collect::<Vec<_>>(),
-        );
+        let visited: Arc<Vec<AtomicBool>> =
+            Arc::new((0..count_threads).map(|_| AtomicBool::new(false)).collect());
         let visited_ref = Arc::clone(&visited);
 
         {
@@ -541,10 +552,10 @@ mod tests {
         const EXPECTED_PARTS: usize = 10_000;
         let mut pool = spawn(hw_threads());
 
-        let visited = Arc::new(
+        let visited: Arc<Vec<AtomicBool>> = Arc::new(
             (0..EXPECTED_PARTS)
                 .map(|_| AtomicBool::new(false))
-                .collect::<Vec<_>>(),
+                .collect(),
         );
         let duplicate = Arc::new(AtomicBool::new(false));
         let visited_ref = Arc::clone(&visited);
@@ -571,10 +582,10 @@ mod tests {
         const EXPECTED_PARTS: usize = 10_000;
         let mut pool = spawn(hw_threads());
 
-        let visited = Arc::new(
+        let visited: Arc<Vec<AtomicBool>> = Arc::new(
             (0..EXPECTED_PARTS)
                 .map(|_| AtomicBool::new(false))
-                .collect::<Vec<_>>(),
+                .collect(),
         );
         let duplicate = Arc::new(AtomicBool::new(false));
         let visited_ref = Arc::clone(&visited);

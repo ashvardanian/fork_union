@@ -68,6 +68,7 @@
 #include <cassert> // `assert`
 #include <cstring> // `std::strlen`
 #include <cstdio>  // `std::snprintf`
+#include <cstdlib> // `std::strtoull`
 #include <utility> // `std::exchange`, `std::addressof`
 #include <new>     // `std::hardware_destructive_interference_size`
 #include <array>   // `std::array`
@@ -1539,6 +1540,9 @@ class ram_page_settings {
      */
     bool try_harvest(numa_node_id_t node_id) noexcept {
         assert(node_id >= 0 && "NUMA node ID must be non-negative");
+
+#if FU_ENABLE_NUMA // We need Linux for `opendir`
+
         std::size_t count_sizes = 0; // ? Number of sizes found
 
         // Build path to NUMA node's hugepages directory
@@ -1615,6 +1619,9 @@ class ram_page_settings {
         ::closedir(hugepages_dir);
         count_sizes_ = count_sizes;
         return true;
+#else
+        return false;
+#endif
     }
 
     std::size_t size() const noexcept { return count_sizes_; }
@@ -3431,6 +3438,7 @@ struct logging_colors_t {
 
     explicit logging_colors_t(bool use_colors) noexcept : use_colors_(use_colors) {}
 
+#if FU_ENABLE_NUMA
     explicit logging_colors_t(int file_descriptor = STDOUT_FILENO) noexcept {
         if (!::isatty(file_descriptor)) return;
 
@@ -3440,6 +3448,16 @@ struct logging_colors_t {
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
     }
+#else
+    explicit logging_colors_t() noexcept {
+        char const *term = std::getenv("TERM");
+        if (!term) return;
+
+        use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
+                      std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
+    }
+
+#endif
 
     /* ANSI style codes */
     char const *reset() { return use_colors_ ? "\033[0m" : ""; }
