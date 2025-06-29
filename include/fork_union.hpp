@@ -242,13 +242,14 @@ enum capabilities_t {
     // CPU-specific capabilities:
     capability_x86_pause_k = 1 << 1,   // ? x86
     capability_x86_tpause_k = 1 << 2,  // ? x86-64 with `WAITPKG` support
-    capability_arm_yield_k = 1 << 3,   // ? Arm
-    capability_arm_wfet_k = 1 << 4,    // ? AArch64 with `WFET` support
-    capability_riscv_pause_k = 1 << 5, // ? RISC-V
+    capability_arm64_yield_k = 1 << 3, // ? Arm
+    capability_arm64_wfet_k = 1 << 4,  // ? AArch64 with `WFET` support
+    capability_risc5_pause_k = 1 << 5, // ? RISC-V
 
     // RAM-specific capabilities:
-    capability_numa_aware_k = 1 << 10, // ? NUMA-aware memory allocations
-    capability_huge_pages_k = 1 << 11, // ? Reducing TLB pressure with huge pages
+    capability_numa_aware_k = 1 << 10,             // ? NUMA-aware memory allocations
+    capability_huge_pages_k = 1 << 11,             // ? Reducing TLB pressure with huge pages
+    capability_huge_pages_transparent_k = 1 << 12, // ? ... doing the same "transparently"
 };
 
 struct standard_yield_t {
@@ -1390,7 +1391,7 @@ struct risc5_pause_t {
 
 /**
  *  @brief Represents the CPU capabilities for hardware-friendly yielding.
- *  @note Combine with @b `memory_capabilities()` to get the full set of library capabilities.
+ *  @note Combine with @b `ram_capabilities()` to get the full set of library capabilities.
  */
 inline capabilities_t cpu_capabilities() noexcept {
     capabilities_t caps = capabilities_unknown_k;
@@ -1413,7 +1414,7 @@ inline capabilities_t cpu_capabilities() noexcept {
 #elif _FU_DETECT_ARCH_ARM64
 
     // Basic YIELD is always available on AArch64
-    caps = static_cast<capabilities_t>(caps | capability_arm_yield_k);
+    caps = static_cast<capabilities_t>(caps | capability_arm64_yield_k);
 
     // Check for WFET support via ID_AA64ISAR2_EL1 register
     std::uint64_t id_aa64isar2_el0;
@@ -1421,15 +1422,54 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WFET is bits [3:0], value 2 indicates WFET support
     std::uint64_t const wfet_field = id_aa64isar2_el0 & 0xF;
-    if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm_wfet_k);
+    if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
 
 #elif _FU_DETECT_ARCH_RISC5
 
     // Basic PAUSE is available on RISC-V with Zihintpause extension
     // For now, we assume it's available if we're on RISC-V
-    caps = static_cast<capabilities_t>(caps | capability_riscv_pause_k);
+    caps = static_cast<capabilities_t>(caps | capability_risc5_pause_k);
 
 #endif
+
+    return caps;
+}
+
+/**
+ *  @brief Represents the memory-system capabilities, retrieved from the Linux Sysfs.
+ *  @note Combine with @b `cpu_capabilities()` to get the full set of library capabilities.
+ */
+inline capabilities_t ram_capabilities() noexcept {
+    capabilities_t caps = capabilities_unknown_k;
+
+#if FU_ENABLE_NUMA
+    // Check for NUMA support
+    if (::numa_available() >= 0) caps = static_cast<capabilities_t>(caps | capability_numa_aware_k);
+
+    // Check for huge pages support - simplest method is checking if the global directory exists
+    {
+        DIR *hugepages_dir = ::opendir("/sys/kernel/mm/hugepages");
+        if (hugepages_dir) {
+            caps = static_cast<capabilities_t>(caps | capability_huge_pages_k);
+            ::closedir(hugepages_dir);
+        }
+    }
+
+    // Check for transparent huge pages
+    {
+        FILE *thp_enabled = ::fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+        if (thp_enabled) {
+            char thp_status[64];
+            if (::fgets(thp_status, sizeof(thp_status), thp_enabled))
+                // THP is enabled if we see "[always]" or "[madvise]" in the output
+                if (::strstr(thp_status, "[always]") || ::strstr(thp_status, "[madvise]"))
+                    // THP is available and enabled - huge pages capability confirmed
+                    caps = static_cast<capabilities_t>(caps | capability_huge_pages_transparent_k);
+            ::fclose(thp_enabled);
+        }
+    }
+
+#endif // FU_ENABLE_NUMA
 
     return caps;
 }
@@ -3633,38 +3673,92 @@ struct log_numa_topology_t {
 };
 
 /**
- *  @brief Logs CPU capabilities summary.
+ *  @brief Logs CPU and memory capabilities summary with compact formatting.
  */
 struct log_capabilities_t {
 
-    void operator()(capabilities_t caps, logging_colors_t colors) noexcept {
-        std::printf("%sCPU Capabilities:%s", colors.bold_cyan(), colors.reset());
+    void operator()(capabilities_t caps, logging_colors_t colors, std::FILE *output = stdout) const noexcept {
 
-        bool first = true;
+        // Line buffer for assembly
+        char line_buffer[1024];
+
+        // Helper lambda to flush line buffer
+        auto flush_line = [&]() { std::fprintf(output, "%s", line_buffer); };
+
+        // Main header
+        std::snprintf(line_buffer, sizeof(line_buffer), "%sSystem Capabilities%s\n", colors.bold_cyan(),
+                      colors.reset());
+        flush_line();
+
+        // CPU Capabilities row
+        std::snprintf(line_buffer, sizeof(line_buffer), "%s├─ %sCPU:%s ", colors.dim(), colors.cyan(), colors.reset());
+        int pos = std::strlen(line_buffer);
+
+        bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
-            std::printf("%s x86 PAUSE", first ? "" : ",");
-            first = false;
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 PAUSE%s",
+                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            first_cpu = false;
         }
         if (caps & capability_x86_tpause_k) {
-            std::printf("%s x86 TPAUSE", first ? "" : ",");
-            first = false;
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 TPAUSE%s",
+                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            first_cpu = false;
         }
-        if (caps & capability_arm_yield_k) {
-            std::printf("%s ARM64 YIELD", first ? "" : ",");
-            first = false;
+        if (caps & capability_arm64_yield_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 YIELD%s",
+                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            first_cpu = false;
         }
-        if (caps & capability_arm_wfet_k) {
-            std::printf("%s ARM64 WFET", first ? "" : ",");
-            first = false;
+        if (caps & capability_arm64_wfet_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 WFET%s",
+                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            first_cpu = false;
         }
-        if (caps & capability_riscv_pause_k) {
-            std::printf("%s RISC-V PAUSE", first ? "" : ",");
-            first = false;
+        if (caps & capability_risc5_pause_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sRISC-V PAUSE%s",
+                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            first_cpu = false;
         }
-        std::printf("\n\n");
+
+        if (first_cpu) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
+                                 colors.reset());
+        }
+
+        std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n");
+        flush_line();
+
+        // Memory Capabilities row
+        std::snprintf(line_buffer, sizeof(line_buffer), "%s└─ %sRAM:%s ", colors.dim(), colors.cyan(), colors.reset());
+        pos = std::strlen(line_buffer);
+
+        bool first_mem = true;
+        if (caps & capability_numa_aware_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sNUMA%s", first_mem ? "" : " • ",
+                                 colors.bold_yellow(), colors.reset());
+            first_mem = false;
+        }
+        if (caps & capability_huge_pages_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sHuge Pages%s",
+                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            first_mem = false;
+        }
+        if (caps & capability_huge_pages_transparent_k) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sTransparent Huge Pages%s",
+                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            first_mem = false;
+        }
+
+        if (first_mem) {
+            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
+                                 colors.reset());
+        }
+
+        std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n\n");
+        flush_line();
     }
 };
-
 #pragma endregion - Logging
 
 } // namespace fork_union

@@ -134,7 +134,9 @@ void iteration_openmp_dynamic(body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRI
 #endif
 }
 
-void iteration_fork_union_static(fu::basic_pool_t &pool, body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces,
+using pool_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t>;
+
+void iteration_fork_union_static(pool_t &pool, body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces,
                                  std::size_t n) noexcept {
     pool.for_n(n, [=](std::size_t i) noexcept {
         vector3_t f {0.0, 0.0, 0.0};
@@ -144,7 +146,7 @@ void iteration_fork_union_static(fu::basic_pool_t &pool, body_t *_FU_RESTRICT bo
     pool.for_n(n, [=](std::size_t i) noexcept { apply_force(bodies[i], forces[i]); });
 }
 
-void iteration_fork_union_dynamic(fu::basic_pool_t &pool, body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces,
+void iteration_fork_union_dynamic(pool_t &pool, body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces,
                                   std::size_t n) noexcept {
     pool.for_n_dynamic(n, [=](std::size_t i) noexcept {
         vector3_t f {0.0, 0.0, 0.0};
@@ -157,8 +159,9 @@ void iteration_fork_union_dynamic(fu::basic_pool_t &pool, body_t *_FU_RESTRICT b
 #if FU_ENABLE_NUMA
 using linux_numa_bodies_allocator_t = fu::linux_numa_allocator<body_t>;
 using linux_numa_bodies_t = std::vector<body_t, linux_numa_bodies_allocator_t>;
+using linux_distributed_pool_t = fu::linux_distributed_pool<fu::standard_yield_t>;
 
-std::vector<linux_numa_bodies_t> make_buffers_for_fork_union_numa(fu::linux_distributed_pool_t &pool,
+std::vector<linux_numa_bodies_t> make_buffers_for_fork_union_numa(linux_distributed_pool_t &pool,
                                                                   std::size_t n) noexcept {
     fu::numa_topology_t const &topology = pool.topology();
     std::size_t const numa_nodes_count = topology.nodes_count();
@@ -174,11 +177,11 @@ std::vector<linux_numa_bodies_t> make_buffers_for_fork_union_numa(fu::linux_dist
     return result;
 }
 
-void iteration_fork_union_numa_static(fu::linux_distributed_pool_t &pool, body_t *_FU_RESTRICT bodies,
+void iteration_fork_union_numa_static(linux_distributed_pool_t &pool, body_t *_FU_RESTRICT bodies,
                                       vector3_t *_FU_RESTRICT forces, std::size_t n,
                                       body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
-    using colocated_prong_t = typename fu::linux_distributed_pool_t::prong_t;
+    using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
     std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This is a quadratic complexity all-to-all interaction, and it's not clear how
@@ -210,11 +213,11 @@ void iteration_fork_union_numa_static(fu::linux_distributed_pool_t &pool, body_t
     pool.for_n(n, [=](std::size_t i) noexcept { apply_force(bodies[i], forces[i]); });
 }
 
-void iteration_fork_union_numa_dynamic(fu::linux_distributed_pool_t &pool, body_t *_FU_RESTRICT bodies,
+void iteration_fork_union_numa_dynamic(linux_distributed_pool_t &pool, body_t *_FU_RESTRICT bodies,
                                        vector3_t *_FU_RESTRICT forces, std::size_t n,
                                        body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
-    using colocated_prong_t = typename fu::linux_distributed_pool_t::prong_t;
+    using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
     std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This expressions is same as in `iteration_fork_union_numa_static` static version:
@@ -249,6 +252,7 @@ void iteration_fork_union_numa_dynamic(fu::linux_distributed_pool_t &pool, body_
 #pragma endregion - Backends
 
 int main(void) {
+    std::printf("Welcome to the Fork Union N-Body simulation!\n");
 
     // Read env vars
     std::size_t n = std::stoul(std::getenv("NBODY_COUNT") ?: "0");
@@ -290,7 +294,7 @@ int main(void) {
 #endif
 
     // Every other configuration uses Fork Union
-    fu::basic_pool_t pool;
+    pool_t pool;
     if (backend == "fork_union_static") {
         if (!pool.try_spawn(threads)) {
             std::fprintf(stderr, "Failed to spawn thread pool\n");
@@ -317,7 +321,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    fu::linux_distributed_pool_t numa_pool(std::move(topology));
+    linux_distributed_pool_t numa_pool(std::move(topology));
     std::vector<linux_numa_bodies_t> bodies_numa_arrays = make_buffers_for_fork_union_numa(numa_pool, n);
     std::vector<body_t *> bodies_numa_buffers(bodies_numa_arrays.size());
     for (std::size_t i = 0; i < bodies_numa_arrays.size(); ++i) bodies_numa_buffers[i] = bodies_numa_arrays[i].data();

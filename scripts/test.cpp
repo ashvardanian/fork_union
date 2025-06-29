@@ -87,7 +87,6 @@ struct make_pool_t {
 };
 
 #if FU_ENABLE_NUMA
-static fu::ram_page_settings_t ram_settings;
 static fu::numa_topology_t numa_topology;
 struct make_linux_colocated_pool_t {
     fu::linux_colocated_pool_t construct() const noexcept { return fu::linux_colocated_pool_t("fork_union"); }
@@ -398,34 +397,28 @@ static bool stress_test_composite(std::size_t const threads_count,
     return true;
 }
 
-void log_numa_topology(void) {
+/**
+ *  @brief Enhanced NUMA topology logging function using the logger class.
+ */
+void log_numa_topology() noexcept {
+    fu::logging_colors_t colors(STDOUT_FILENO);
 #if FU_ENABLE_NUMA
-    if (!ram_settings.try_harvest()) {
-        std::fprintf(stderr, "Failed to harvest RAM page settings\n");
-        exit(EXIT_FAILURE);
-    }
+    // Harvest topology
     if (!numa_topology.try_harvest()) {
-        std::fprintf(stderr, "Failed to harvest NUMA topology\n");
-        exit(EXIT_FAILURE);
+        std::fprintf(stderr, "%sX Failed to harvest NUMA topology%s\n", colors.bold_red(), colors.reset());
+        std::exit(EXIT_FAILURE);
     }
 
-    std::printf("Harvested topology:\n");
-    std::printf("- %zu huge page sizes:\n", ram_settings.size());
-    for (auto const &setting : ram_settings) {
-        if (setting.size_bytes > 1024 * 1024 * 1024) { std::printf("  - %zu GiB\n", setting.size_bytes >> 30); }
-        else if (setting.size_bytes > 1024 * 1024) { std::printf("  - %zu MiB\n", setting.size_bytes >> 20); }
-        else if (setting.size_bytes > 1024) { std::printf("  - %zu KiB\n", setting.size_bytes >> 10); }
-        else { std::printf("  - %zu B\n", setting.size_bytes); }
-    }
-    std::printf("- %zu NUMA nodes, %zu threads\n", numa_topology.nodes_count(), numa_topology.threads_count());
-    for (std::size_t i = 0; i < numa_topology.nodes_count(); ++i) {
-        auto const n = numa_topology.node(i);
-        std::printf("- node %d : %zu MiB, %zu cores: %d...%d\n",  //
-                    n.node_id, n.memory_size >> 20, n.core_count, //
-                    n.first_core_id[0], n.first_core_id[n.core_count - 1]);
-    }
-    std::printf("Current process ID: %d\n", ::getpid());
-#endif
+    fu::capabilities_t cpu_caps = fu::cpu_capabilities();
+    fu::capabilities_t ram_caps = fu::ram_capabilities();
+
+    // Log topology and capabilities
+    fu::log_numa_topology_t {}(numa_topology, colors);
+    fu::log_capabilities_t {}(static_cast<fu::capabilities_t>(cpu_caps | ram_caps), colors);
+
+#else
+    std::printf("%sNUMA support not compiled in%s\n", colors.dim(), colors.reset());
+#endif // FU_ENABLE_NUMA
 }
 
 int main(void) {
@@ -439,6 +432,7 @@ int main(void) {
         char const *name;
         test_func_t *function;
     } const unit_tests[] = {
+        // Helpers
         {"`indexed_split` helpers", test_indexed_split},            //
         {"`coprime_permutation` ranges", test_coprime_permutation}, //
         // Actual thread-pools
