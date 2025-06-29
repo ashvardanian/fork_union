@@ -8,7 +8,15 @@ license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/fork_union"
 
 [lib]
-path = "fork_union.rs"
+name = "fork_union"
+path = "rust/lib.rs"
+
+[build-dependencies]
+cc = "1.2.27"
+
+[features]
+default = ["std"]
+std = []
 
 [profile.release]
 opt-level = 3     # Corresponds to -O3
