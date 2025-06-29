@@ -1473,23 +1473,31 @@ class ram_page_settings {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
     std::array<ram_page_setting_t, max_page_sizes_k> sizes_ {0}; // ? Huge page sizes in bytes
     std::size_t count_sizes_ {0};                                // ? Number of supported huge page sizes
-    numa_node_id_t node_id_ {-1};                                // ? NUMA node ID, -1 if not set
   public:
-    explicit ram_page_settings(numa_node_id_t node_id = -1) noexcept : node_id_(node_id) {}
+    /**
+     *  @brief Finds the largest Huge Pages size available for the given NUMA node.
+     */
+    ram_page_setting_t largest_free() const noexcept {
+        if (!count_sizes_) return {};
+        ram_page_setting_t largest = sizes_[0];
+        for (std::size_t i = 1; i < count_sizes_; ++i)
+            if (sizes_[i].free_pages > largest.free_pages) largest = sizes_[i];
+        return largest;
+    }
 
     /**
      *  @brief Fetches all available huge page sizes for the given NUMA node.
      *  @note Kernel support doesn't mean that pages of that size have a valid mount point.
      */
-    bool try_harvest() noexcept {
-        assert(node_id_ >= 0 && "NUMA node ID must be non-negative");
+    bool try_harvest(numa_node_id_t node_id) noexcept {
+        assert(node_id >= 0 && "NUMA node ID must be non-negative");
         std::size_t count_sizes = 0; // ? Number of sizes found
 
         // Build path to NUMA node's hugepages directory
         char hugepages_path[256];
         int path_result = std::snprintf(            //
             hugepages_path, sizeof(hugepages_path), //
-            "/sys/devices/system/node/node%d/hugepages", node_id_);
+            "/sys/devices/system/node/node%d/hugepages", node_id);
         if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(hugepages_path))
             return false; // ? Path too long
 
@@ -1567,6 +1575,51 @@ class ram_page_settings {
     ram_page_setting_t const &operator[](std::size_t const index) const noexcept {
         assert(index < count_sizes_ && "Index is out of bounds");
         return sizes_[index];
+    }
+
+    /**
+     *  @brief Attempts to reserve huge pages of a specific size on the current NUMA node.
+     *  @param[in] page_size_bytes The size of huge pages to reserve (must match an available size)
+     *  @param[in] num_pages Number of pages to reserve
+     *  @return true if reservation was successful, false otherwise
+     *  @note Requires root privileges or appropriate capabilities
+     */
+    bool try_change(numa_node_id_t node_id, std::size_t page_size_bytes, std::size_t num_pages) noexcept {
+        assert(node_id >= 0 && "NUMA node ID must be non-negative");
+
+        // Find the matching page size entry
+        std::size_t page_index = count_sizes_;
+        for (std::size_t i = 0; i < count_sizes_; ++i) {
+            if (sizes_[i].bytes_per_page == page_size_bytes) {
+                page_index = i;
+                break;
+            }
+        }
+        if (page_index >= count_sizes_) return false; // ? Page size not found
+
+        // Calculate the page size in kB for the directory name
+        std::size_t const page_size_kb = page_size_bytes / 1024;
+
+        // Build path to the nr_hugepages file
+        char nr_hugepages_path[512];
+        int const path_result = std::snprintf(                                        //
+            nr_hugepages_path, sizeof(nr_hugepages_path),                             //
+            "/sys/devices/system/node/node%d/hugepages/hugepages-%zukB/nr_hugepages", //
+            node_id, page_size_kb);
+
+        if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(nr_hugepages_path))
+            return false; // ? Path too long
+
+        // Write the new reservation count
+        FILE *nr_file = ::fopen(nr_hugepages_path, "w");
+        if (!nr_file) return false; // ? Can't open for writing (likely permissions issue)
+
+        bool const update_success = (::fprintf(nr_file, "%zu", num_pages) > 0);
+        ::fclose(nr_file);
+        if (!update_success) return false; // ? Failed to write the number of pages
+
+        // Refresh our internal state if write was successful
+        return try_harvest(node_id);
     }
 };
 
