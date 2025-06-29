@@ -87,6 +87,11 @@
 extern "C" {
 #endif
 
+int fu_version_major(void); // ? Returns the major version of the Fork Union library
+int fu_version_minor(void); // ? Returns the minor version of the Fork Union library
+int fu_version_patch(void); // ? Returns the patch version of the Fork Union library
+int fu_enabled_numa(void);  // ? Checks if the library was compiled with NUMA support
+
 #pragma region - Types
 
 typedef int fu_bool_t;             // ? A simple boolean type, 0 for false, 1 for true
@@ -156,7 +161,7 @@ typedef enum fu_caller_exclusivity_t {
  *  - "numa" pools reduce memory access latency by ~35% on multi-socket servers.
  *  - CPU-specific extensions like "tpause" and "wfet" reduce power consumption during busy-waits.
  */
-char const *fu_capabilities_string();
+char const *fu_capabilities_string(void);
 
 /**
  *  @brief Describes the number of logical CPU cores available on the system.
@@ -173,7 +178,7 @@ char const *fu_capabilities_string();
  *  - Memory-bound tasks: consider `fu_count_numa_nodes() * cores_per_node`
  *  - I/O-bound tasks: consider 2-4x `fu_count_logical_cores()`
  */
-size_t fu_count_logical_cores();
+size_t fu_count_logical_cores(void);
 
 /**
  *  @brief Describes the maximum number of individually addressable thread groups.
@@ -192,7 +197,7 @@ size_t fu_count_logical_cores();
  *  Understanding colocations helps optimize memory allocation and task distribution.
  *  @sa `fu_count_numa_nodes`, `fu_count_quality_levels`, `fu_allocate_at_least`.
  */
-size_t fu_count_colocations();
+size_t fu_count_colocations(void);
 
 /**
  *  @brief Describes the number of NUMA (Non-Uniform Memory Access) nodes.
@@ -208,7 +213,7 @@ size_t fu_count_colocations();
  *  schedule tasks on the same NUMA node.
  *  @sa `fu_allocate_at_least`, `fu_free`.
  */
-size_t fu_count_numa_nodes();
+size_t fu_count_numa_nodes(void);
 
 /**
  *  @brief Describes the number of distinct Quality-of-Service levels.
@@ -220,10 +225,11 @@ size_t fu_count_numa_nodes();
  *  Different QoS levels may have vastly different performance characteristics.
  *  Consider creating separate thread pools for different workload types.
  */
-size_t fu_count_quality_levels();
+size_t fu_count_quality_levels(void);
 
 /**
  *  @brief Describes the number of different huge page sizes supported.
+ *  @param[in] numa_node_index The index of the NUMA node to allocate memory on, in [0, numa_nodes_count).
  *  @retval 0 if huge pages are not supported or not available.
  *  @retval 1-4 on systems with huge page support (typically 2MB, 1GB sizes).
  *  @note This API is @b not synchronized and should be called once during initialization.
@@ -238,7 +244,7 @@ size_t fu_count_quality_levels();
  *  - 16KB/64KB: Base page sizes on some ARM configurations
  *  @sa `fu_allocate_at_least` for NUMA-aware allocation with huge page support.
  */
-size_t fu_count_huge_pages();
+size_t fu_volume_huge_pages(size_t numa_node_index);
 
 #pragma endregion - Metadata
 
@@ -307,7 +313,7 @@ void fu_free(size_t numa_node_index, void *pointer, size_t bytes);
  *  with `fu_pool_spawn` before use. Multiple pools can coexist.
  *  @sa `fu_pool_delete` for cleanup, `fu_pool_spawn` for initialization.
  */
-fu_pool_t *fu_pool_new();
+fu_pool_t *fu_pool_new(void);
 
 /**
  *  @brief Destroys a thread pool and releases all associated resources.
@@ -703,9 +709,9 @@ void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callba
  *
  *  @code{.c}
  *  fu_pool_unsafe_for_n(pool, count, process_data, context);
- *  setup_next_iteration();
+ *  setup_next_iteration(void);
  *  fu_pool_unsafe_join(pool);
- *  use_processed_data();
+ *  use_processed_data(void);
  *  @endcode
  *  @sa All `fu_pool_unsafe_*` functions require this for proper synchronization.
  */
