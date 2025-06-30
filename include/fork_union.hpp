@@ -1491,6 +1491,48 @@ struct ram_page_setting_t {
 };
 
 /**
+ *  @brief Fetches the socket ID for a given CPU core.
+ *  @param[in] core_id The CPU core ID to query.
+ *  @retval Socket ID (>= 0) if successful.
+ *  @retval -1 if failed.
+ */
+static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
+
+    int socket_id = -1;
+
+#if defined(__linux__)
+    char socket_path[256];
+    int path_result = std::snprintf(      //
+        socket_path, sizeof(socket_path), //
+        "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", core_id);
+    if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(socket_path)) return -1; // ? Path too long
+
+    FILE *socket_file = ::fopen(socket_path, "r");
+    if (!socket_file) return -1; // ? Can't read socket info
+
+    if (::fscanf(socket_file, "%d", &socket_id) != 1) socket_id = -1; // ? Failed to parse
+    ::fclose(socket_file);
+#endif
+
+    return socket_id;
+}
+
+/**
+ *  @brief Fetches the RAM page size in bytes.
+ *  @retval The size of a memory page in bytes, typically 4096 on most systems.
+ *  @note On Linux, this is the system page size, which may differ from Huge Pages sizes.
+ */
+static std::size_t get_ram_page_size() noexcept {
+#if FU_ENABLE_NUMA
+    return ::numa_pagesize();
+    // #elif defined(__unix__) || defined(__APPLE__)
+    //     return ::sysconf(_SC_PAGESIZE);
+#else
+    return 4096;
+#endif
+}
+
+/**
  *  @brief Describes the configured & supported (by OS & CPU) memory pages sizes.
  *
  *  This class avoids HugeTLBfs in favor of a direct access to the @b `/sys` filesystem.
@@ -1697,29 +1739,6 @@ struct numa_node {
 };
 
 using numa_node_t = numa_node<>;
-
-/**
- *  @brief Fetches the socket ID for a given CPU core.
- *  @param[in] core_id The CPU core ID to query.
- *  @retval Socket ID (>= 0) if successful.
- *  @retval -1 if failed.
- */
-inline numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
-
-    char socket_path[256];
-    int path_result = std::snprintf(      //
-        socket_path, sizeof(socket_path), //
-        "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", core_id);
-    if (path_result < 0 || static_cast<std::size_t>(path_result) >= sizeof(socket_path)) return -1; // ? Path too long
-
-    FILE *socket_file = ::fopen(socket_path, "r");
-    if (!socket_file) return -1; // ? Can't read socket info
-
-    int socket_id = -1;
-    if (::fscanf(socket_file, "%d", &socket_id) != 1) socket_id = -1; // ? Failed to parse
-    ::fclose(socket_file);
-    return socket_id;
-}
 
 template <typename value_type_, typename comparator_type_ = std::less<value_type_>>
 void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = comparator_type_()) noexcept {
@@ -1943,7 +1962,7 @@ struct numa_topology {
 using numa_topology_t = numa_topology<>;
 
 /**
- *  @brief Back-ports the C++ 23 `std::allocation_result`.
+ *  @brief Back-ports the C++ 23 `std::allocation_result`. Unlike STL, also contains the page size.
  *  @see https://en.cppreference.com/w/cpp/memory/allocator/allocate_at_least
  */
 template <typename pointer_type_ = char, typename size_type_ = std::size_t>
@@ -1951,12 +1970,14 @@ struct allocation_result {
     using pointer_type = pointer_type_;
     using size_type = size_type_;
 
-    pointer_type ptr {nullptr}; // ? Pointer to the allocated memory, or nullptr if allocation failed
-    size_type count {0};        // ? Number of elements allocated, or 0 if allocation failed
+    pointer_type ptr {nullptr};   // ? Pointer to the allocated memory, or nullptr if allocation failed
+    size_type count {0};          // ? Number of elements allocated, or 0 if allocation failed
+    size_type bytes_per_page {0}; // ? Reports the page size used for the allocation, if applicable
 
     constexpr allocation_result() noexcept = default;
     constexpr allocation_result(pointer_type p, size_type s) noexcept : ptr(p), count(s) {}
     explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
+    constexpr operator pointer_type() const noexcept { return ptr; }
 
 #if defined(__cpp_lib_allocate_at_least)
     operator std::allocation_result<pointer_type, size_type>() const noexcept {
@@ -1964,6 +1985,74 @@ struct allocation_result {
     }
 #endif
 };
+
+/**
+ *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
+ *  @retval true if binding succeeded, false otherwise.
+ */
+static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t node_id) noexcept {
+#if FU_ENABLE_NUMA
+    // Pin the memory - that may require an extra allocation for `node_mask` on some systems
+    ::nodemask_t node_mask;
+    ::bitmask node_mask_as_bitset;
+    node_mask_as_bitset.size = sizeof(node_mask) * 8;
+    node_mask_as_bitset.maskp = &node_mask.n[0];
+    ::numa_bitmask_setbit(&node_mask_as_bitset, node_id);
+    int mbind_flags;
+#if defined(MPOL_F_STATIC_NODES)
+    mbind_flags = MPOL_F_STATIC_NODES;
+#else
+    mbind_flags = 1 << 15;
+#endif // MPOL_F_STATIC_NODES
+
+    long binding_status = ::mbind(ptr, size_bytes, MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1, mbind_flags);
+    if (binding_status < 0) return false; // ! Binding failed
+    return true;                          // ? Binding succeeded
+#else
+    return false;
+#endif // FU_ENABLE_NUMA
+}
+
+/**
+ *  @brief Tries allocating uninitialized memory and binding it to a specific NUMA @p `node_id`.
+ *  @retval nullptr if allocation failed or the page size is unsupported.
+ *  @retval pointer to the allocated memory on success.
+ */
+static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes, numa_node_id_t node_id) noexcept {
+    assert(node_id >= 0 && "NUMA node ID must be non-negative");
+    assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
+
+#if FU_ENABLE_NUMA
+
+    // In simple cases, just redirect to `numa_alloc_onnode`
+    if (page_size_bytes == ::numa_pagesize()) return ::numa_alloc_onnode(size_bytes, node_id);
+
+    // Make sure the page size makes sense for Linux
+    int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
+    else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB; }
+    else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_1GB; }
+    else { return nullptr; } // ! Unsupported page size
+
+    // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
+    void *result_ptr = ::mmap(nullptr, size_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+    if (result_ptr == MAP_FAILED) return nullptr; // ! Allocation failed
+
+    if (!linux_numa_bind(result_ptr, size_bytes, node_id)) {
+        ::munmap(result_ptr, size_bytes); // ? Unbind failed, clean up
+        return nullptr;                   // ! Binding failed
+    }
+    return result_ptr;
+#else
+    return nullptr;
+#endif // FU_ENABLE_NUMA
+}
+
+static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+#if FU_ENABLE_NUMA
+    numa_free(ptr, size_bytes);
+#endif
+}
 
 /**
  *  @brief STL-compatible allocator pinned to a NUMA node, prioritizing Huge Pages.
@@ -1983,16 +2072,50 @@ struct linux_numa_allocator {
     using size_type = std::size_t;
     using propagate_on_container_move_assignment = std::true_type;
 
-    numa_node_id_t node_id {-1};  // ? Unique NUMA node ID, in [0, numa_max_node())
-    size_type bytes_per_page {0}; // ? NUMA or Huge Page size in bytes, typically 4 KB, 2 MB, or 1 GB
+  private:
+    numa_node_id_t node_id_ {-1};     // ? Unique NUMA node ID, in [0, numa_max_node())
+    size_type default_page_size_ {0}; // ? RAM page size in bytes, typically 4 KB
 
+  public:
     constexpr linux_numa_allocator() noexcept = default;
-    explicit constexpr linux_numa_allocator(numa_node_id_t id, size_type paging = 0) noexcept
-        : node_id(id), bytes_per_page(paging) {}
+    explicit constexpr linux_numa_allocator(numa_node_id_t id, size_type paging = get_ram_page_size()) noexcept
+        : node_id_(id), default_page_size_(paging) {}
 
     template <typename other_type_>
     constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
-        : node_id(o.node_id), bytes_per_page(o.bytes_per_page) {}
+        : node_id_(o.node_id_), default_page_size_(o.default_page_size_) {}
+
+    /**
+     *  @brief Allocates memory for at least `size` elements of `value_type`.
+     *  @param[in] size The number of elements to allocate.
+     *  @param[in] page_size_bytes The size of the memory page to allocate, must be a multiple of `sizeof(value_type)`.
+     *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
+     *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
+     */
+    allocation_result<value_type *, size_type> allocate_at_least(size_type size, size_type page_size_bytes) noexcept {
+        size_type const size_bytes = size * sizeof(value_type);
+        size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
+
+        // Check if the new size is actually perfectly divisible by the `sizeof(value_type)`
+        if (aligned_size_bytes % sizeof(value_type)) return {}; // ! Not a size multiple
+        return allocate(aligned_size_bytes / sizeof(value_type), page_size_bytes);
+    }
+
+    /**
+     *  @brief Allocates memory for `size` elements of `value_type`.
+     *  @param[in] size The number of elements to allocate.
+     *  @param[in] page_size_bytes The size of the memory page to allocate, must be a multiple of `sizeof(value_type)`.
+     *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
+     *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
+     */
+    allocation_result<value_type *, size_type> allocate(size_type size, size_type page_size_bytes) noexcept {
+        size_type const size_bytes = size * sizeof(value_type);
+        void *result_ptr = linux_numa_allocate(size_bytes, page_size_bytes, node_id_);
+        if (!result_ptr) return {}; // ! Allocation failed
+        return {static_cast<value_type *>(result_ptr), size_bytes, page_size_bytes};
+    }
+
+    void deallocate(value_type *p, size_type n) noexcept { linux_numa_free(p, n * sizeof(value_type)); }
 
     /**
      *  @brief Allocates memory for at least `size` elements of `value_type`.
@@ -2001,79 +2124,51 @@ struct linux_numa_allocator {
      *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
      */
     allocation_result<value_type *, size_type> allocate_at_least(size_type size) noexcept {
-#if FU_ENABLE_NUMA
+        // Go through all of the typical Linux page sizes,
+        // finding the largest one that makes sense and doesn't fail.
         size_type const size_bytes = size * sizeof(value_type);
-        size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
-        size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
 
-        // Check if the new size is actually perfectly divisible by the `sizeof(value_type)`
-        if (aligned_size_bytes % sizeof(value_type)) return {}; // ! Not a size multiple
+        // Try 1 GB Huge Pages, for buffers larger than 2 GB
+        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
+            if (auto result = allocate_at_least(size, 1u * 1024u * 1024u * 1024u); result) return result;
 
-        size_type const aligned_size = aligned_size_bytes / sizeof(value_type);
-        value_type *result_ptr = allocate(aligned_size);
-        if (!result_ptr) return {}; // ! Allocation failed
-        return {result_ptr, aligned_size};
-#else
-        return {};
-#endif
+        // Try 2 MB Huge Pages, for buffers larger than 4 MB
+        if (size_bytes >= 4u * 1024u * 1024u)
+            if (auto result = allocate_at_least(size, 2u * 1024u * 1024u); result) return result;
+
+        return allocate_at_least(size, default_page_size_);
     }
 
-    value_type *allocate(size_type size) noexcept {
-        void *result_ptr = nullptr;
-
-#if FU_ENABLE_NUMA
+    /**
+     *  @brief Allocates memory for `size` elements of `value_type`.
+     *  @param[in] size The number of elements to allocate.
+     *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
+     *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
+     */
+    allocation_result<value_type *, size_type> allocate(size_type size) noexcept {
+        // Go through all of the typical Linux page sizes,
+        // finding the largest one that makes sense and doesn't fail.
         size_type const size_bytes = size * sizeof(value_type);
-        size_type const page_size_bytes = bytes_per_page == 0 ? ::numa_pagesize() : bytes_per_page;
-        size_type const aligned_size_bytes = (size_bytes + page_size_bytes - 1) / page_size_bytes * page_size_bytes;
 
-        // In simple cases, just redirect to `numa_alloc_onnode`
-        if (page_size_bytes == ::numa_pagesize())
-            return static_cast<value_type *>(::numa_alloc_onnode(aligned_size_bytes, node_id));
+        // Try 1 GB Huge Pages, for buffers larger than 2 GB
+        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
+            if (auto result = allocate(size, 1u * 1024u * 1024u * 1024u); result) return result;
 
-        // Make sure the page size makes sense for Linux
-        int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-        if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
-        else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB; }
-        else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_1GB; }
-        else { return nullptr; } // ! Unsupported page size
+        // Try 2 MB Huge Pages, for buffers larger than 4 MB
+        if (size_bytes >= 4u * 1024u * 1024u)
+            if (auto result = allocate(size, 2u * 1024u * 1024u); result) return result;
 
-        // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
-        result_ptr = ::mmap(nullptr, aligned_size_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-        if (result_ptr == MAP_FAILED) return nullptr; // ! Allocation failed
-
-        // Pin the memory - that may require an extra allocation for `node_mask` on some systems
-        ::nodemask_t node_mask;
-        ::bitmask node_mask_as_bitset;
-        node_mask_as_bitset.size = sizeof(node_mask) * 8;
-        node_mask_as_bitset.maskp = &node_mask.n[0];
-        ::numa_bitmask_setbit(&node_mask_as_bitset, node_id);
-        int mbind_flags;
-#if defined(MPOL_F_STATIC_NODES)
-        mbind_flags = MPOL_F_STATIC_NODES;
-#else
-        mbind_flags = 1 << 15;
-#endif // MPOL_F_STATIC_NODES
-
-        long binding_status = ::mbind(      //
-            result_ptr, aligned_size_bytes, //
-            MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1, mbind_flags);
-        if (binding_status < 0) return nullptr; // ! Binding failed
-
-#endif // FU_ENABLE_NUMA
-
-        return static_cast<value_type *>(result_ptr);
+        return allocate(size, default_page_size_);
     }
-
-    void deallocate(value_type *p, size_type n) noexcept { numa_free(p, n * sizeof(value_type)); }
 
     template <typename other_type_>
     bool operator==(linux_numa_allocator<other_type_> const &o) const noexcept {
-        return node_id == o.node_id && bytes_per_page == o.bytes_per_page;
+        return node_id_ == o.node_id_ && default_page_size_ == o.default_page_size_;
     }
 
     template <typename other_type_>
     bool operator!=(linux_numa_allocator<other_type_> const &o) const noexcept {
-        return node_id != o.node_id || bytes_per_page != o.bytes_per_page;
+        return node_id_ != o.node_id_ || default_page_size_ != o.default_page_size_;
     }
 };
 

@@ -62,16 +62,20 @@ struct opaque_pool_t {
 
     /** @brief A shim to redirect unsafe callbacks to the current context. */
     void operator()(fu::colocated_thread_t pinned) const noexcept {
+        std::printf("> thread %zu, colocation %zu\n", pinned.thread, pinned.colocation);
         current_callback.for_threads(current_context, pinned.thread, pinned.colocation);
     }
 
     /** @brief A shim to redirect unsafe callbacks to the current context. */
     void operator()(fu::colocated_prong_t prong) const noexcept {
+        std::printf("> prong %zu, thread %zu, colocation %zu\n", prong.task, prong.thread, prong.colocation);
         current_callback.for_prongs(current_context, prong.task, prong.thread, prong.colocation);
     }
 
     /** @brief A shim to redirect unsafe callbacks to the current context. */
     void operator()(fu::colocated_prong_t prong, std::size_t count) const noexcept {
+        std::printf("> prongs %zu-%zu, thread %zu, colocation %zu\n", prong.task, prong.task + count, prong.thread,
+                    prong.colocation);
         current_callback.for_slices(current_context, prong.task, count, prong.thread, prong.colocation);
     }
 };
@@ -83,7 +87,10 @@ static char global_capabilities_string[128] {};
 
 bool globals_initialize(void) {
     if (global_initialized) return true;
+
+#if FU_ENABLE_NUMA
     if (!global_numa_topology.try_harvest()) return false;
+#endif
 
     fu::capabilities_t cpu_caps = fu::cpu_capabilities();
     fu::capabilities_t ram_caps = fu::ram_capabilities();
@@ -120,26 +127,29 @@ int fu_enabled_numa(void) { return FU_ENABLE_NUMA; }
 #pragma region - Metadata
 
 char const *fu_capabilities_string(void) {
-    globals_initialize();
+    if (!globals_initialize()) return nullptr;
     return &global_capabilities_string[0];
 }
 
 size_t fu_count_logical_cores(void) {
-    globals_initialize();
+    if (!globals_initialize()) return 0;
     return global_numa_topology.threads_count();
 }
 
 size_t fu_count_colocations(void) {
-    globals_initialize();
+    if (!globals_initialize()) return 0;
     return global_numa_topology.nodes_count();
 }
 
 size_t fu_count_numa_nodes(void) {
-    globals_initialize();
+    if (!globals_initialize()) return 0;
     return global_numa_topology.nodes_count();
 }
 
-size_t fu_count_quality_levels(void) { return 1; } // TODO: One day I'll get some of those weird CPUs to do this
+size_t fu_count_quality_levels(void) {
+    if (!globals_initialize()) return 0;
+    return 1; // TODO: One day I'll get some of those weird CPUs to do this
+}
 
 size_t fu_volume_huge_pages(size_t numa_node_index) {
     size_t total_volume = 0;
@@ -152,24 +162,41 @@ size_t fu_volume_huge_pages(size_t numa_node_index) {
 
 #pragma region - Memory
 
-fu_bool_t fu_allocate_at_least(                   //
+void *fu_allocate_at_least(                       //
     size_t numa_node_index, size_t minimum_bytes, //
-    void **allocated_pointer, size_t *allocated_bytes) {
+    size_t *allocated_bytes, size_t *bytes_per_page) {
 
 #if FU_ENABLE_NUMA
     auto const &node = global_numa_topology.node(numa_node_index);
     fu::linux_numa_allocator_t allocator(node.node_id);
     auto result = allocator.allocate_at_least(minimum_bytes);
-    if (!result) return false;
-    *allocated_pointer = result.ptr;
+    if (!result) return nullptr;
     *allocated_bytes = result.count;
-    return true;
+    *bytes_per_page = result.bytes_per_page;
+    return result.ptr;
 #else
     auto result = std::malloc(minimum_bytes);
-    if (!result) return false;
-    *allocated_pointer = result;
+    if (!result) return nullptr;
     *allocated_bytes = minimum_bytes;
-    return true;
+    *bytes_per_page = fu::get_ram_page_size();
+    return result;
+#endif
+}
+
+void *fu_allocate(size_t numa_node_index, size_t bytes, size_t *bytes_per_page) {
+
+#if FU_ENABLE_NUMA
+    auto const &node = global_numa_topology.node(numa_node_index);
+    fu::linux_numa_allocator_t allocator(node.node_id);
+    auto result = allocator.allocate(bytes);
+    if (!result) return nullptr;
+    *bytes_per_page = result.bytes_per_page;
+    return result.ptr;
+#else
+    auto result = std::malloc(bytes);
+    if (!result) return nullptr;
+    *bytes_per_page = fu::get_ram_page_size();
+    return result;
 #endif
 }
 

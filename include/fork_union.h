@@ -255,9 +255,8 @@ size_t fu_volume_huge_pages(size_t numa_node_index);
  *  @param[in] numa_node_index The index of the NUMA node to allocate memory on, in [0, numa_nodes_count).
  *  @param[in] minimum_bytes Minimum number of bytes to allocate, must be > 0.
  *  @param[out] allocated_pointer Pointer to store the address of the allocated memory, must not be NULL.
- *  @param[out] allocated_bytes Pointer to store the actual number of bytes allocated, must not be NULL.
- *  @retval 1 if the allocation was successful.
- *  @retval 0 if the allocation failed due to OOM, invalid parameters, or NUMA unavailability.
+ *  @param[out] bytes_per_page Pointer to store the size of the RAM pages used for allocation, must not be NULL.
+ *  @retval Pointer to allocated memory, or NULL if allocation failed.
  *  @note This API is @b thread-safe and can be called from any thread.
  *
  *  This function attempts to allocate memory with the largest available page size
@@ -265,9 +264,9 @@ size_t fu_volume_huge_pages(size_t numa_node_index);
  *  due to page alignment requirements. Always check `allocated_bytes` for the actual size.
  *
  *  Memory allocation strategy:
- *  - Attempts 1GB huge pages for allocations >= 512MB
- *  - Attempts 2MB huge pages for allocations >= 1MB
- *  - Falls back to standard 4KB pages for smaller allocations
+ *  - Attempts 1 GB huge pages for allocations >= 2 GB
+ *  - Attempts 2 MB huge pages for allocations >= 4 MB
+ *  - Falls back to standard (typically 4KB) pages for smaller allocations
  *  - Always aligns to page boundaries for optimal performance
  *
  *  @code{.c}
@@ -280,9 +279,9 @@ size_t fu_volume_huge_pages(size_t numa_node_index);
  *  @endcode
  *  @sa `fu_free` for deallocation, `fu_count_numa_nodes` for valid node indices.
  */
-fu_bool_t fu_allocate_at_least(                   //
+void *fu_allocate_at_least(                       //
     size_t numa_node_index, size_t minimum_bytes, //
-    void **allocated_pointer, size_t *allocated_bytes);
+    size_t *allocated_bytes, size_t *bytes_per_page);
 
 /**
  *  @brief Releases memory allocated on a specific NUMA node.
@@ -298,6 +297,20 @@ fu_bool_t fu_allocate_at_least(                   //
  *  @sa `fu_allocate_at_least` for allocation.
  */
 void fu_free(size_t numa_node_index, void *pointer, size_t bytes);
+
+/**
+ *  @brief Allocates exactly the requested amount of memory on a specific NUMA node.
+ *  @param[in] numa_node_index The index of the NUMA node to allocate memory on.
+ *  @param[in] bytes Number of bytes to allocate, must be > 0.
+ *  @param[out] bytes_per_page Pointer to store the size of the RAM pages used for allocation, must not be NULL.
+ *  @retval Pointer to allocated memory, or NULL if allocation failed.
+ *  @note This API is @b thread-safe and can be called from any thread.
+ *
+ *  This function allocates exactly `bytes` of memory with the specified alignment.
+ *  Unlike `fu_allocate_at_least`, this function doesn't over-allocate for page optimization.
+ *  Use this for compatibility with standard allocator interfaces.
+ */
+void *fu_allocate(size_t numa_node_index, size_t bytes, size_t *bytes_per_page);
 
 #pragma endregion - Memory
 
