@@ -219,16 +219,16 @@ constexpr bool is_power_of_two(std::size_t x) noexcept { return x && ((x & (x - 
  *  will be executed by the calling thread (as opposed to workers) and the join will happen
  *  inside of the calling scope.
  */
-enum caller_exclusivity_t {
-    caller_inclusive_k,
-    caller_exclusive_k,
+enum caller_exclusivity_t : unsigned int {
+    caller_inclusive_k = 0,
+    caller_exclusive_k = 1,
 };
 
 /**
  *  @brief Defines the mood of the thread-pool, whether it is busy or about to die.
  *  @sa `mood_t::grind_k`, `mood_t::chill_k`, `mood_t::die_k`
  */
-enum class mood_t {
+enum class mood_t : unsigned int {
     grind_k = 0, // ? That's our default ;)
     chill_k,     // ? Sleepy and tired, but just a wake-up call away
     die_k,       // ? The thread is about to die, we must exit the loop peacefully
@@ -237,7 +237,7 @@ enum class mood_t {
 /**
  *  @brief Describes all the special library features.
  */
-enum capabilities_t {
+enum capabilities_t : unsigned int {
     capabilities_unknown_k = 0,
 
     // CPU-specific capabilities:
@@ -381,6 +381,144 @@ struct colocated_thread {
 };
 
 using colocated_thread_t = colocated_thread<>; // ? Default prong type with `std::size_t` indices
+
+/**
+ *  @brief Back-ports the C++ 23 `std::allocation_result`. Unlike STL, also contains the page size.
+ *  @see https://en.cppreference.com/w/cpp/memory/allocator/allocate_at_least
+ */
+template <typename pointer_type_ = char, typename size_type_ = std::size_t>
+struct allocation_result {
+    using pointer_type = pointer_type_;
+    using size_type = size_type_;
+
+    pointer_type ptr {nullptr}; // ? Pointer to the allocated memory, or nullptr if allocation failed
+    size_type count {0};        // ? Number of elements allocated, or 0 if allocation failed
+    size_type bytes {0};        // ? Reports the total volume of memory allocated, in bytes
+    size_type pages {0};        // ? Reports the number of memory pages allocated
+
+    constexpr allocation_result() noexcept = default;
+    constexpr allocation_result(pointer_type ptr, size_type count, size_type bytes, size_type pages) noexcept
+        : ptr(ptr), count(count), bytes(bytes), pages(pages) {}
+
+    explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
+
+    size_type bytes_per_page() const noexcept { return bytes / pages; }
+
+#if defined(__cpp_lib_allocate_at_least)
+    operator std::allocation_result<pointer_type, size_type>() const noexcept {
+        return std::allocation_result<pointer_type, size_type>(ptr, count);
+    }
+#endif
+};
+
+/**
+ *  @brief Analogous to `std::unique_ptr<T[]>`, but designed for large padded allocations.
+ *  @see https://en.cppreference.com/w/cpp/memory/unique_ptr.html
+ */
+template <typename object_type_, typename allocator_type_>
+class unique_padded_buffer {
+
+    using object_t = object_type_;
+    static_assert(std::is_nothrow_default_constructible_v<object_t>,
+                  "unique_padded_buffer requires noexcept-default-constructible object type");
+
+    using allocator_t = allocator_type_;
+    using allocator_traits_t = std::allocator_traits<allocator_t>;
+    using raw_allocator_t = typename allocator_traits_t::template rebind_alloc<char>;
+
+    char *raw_ {nullptr};
+    std::size_t objects_count_ {0};
+    std::size_t bytes_per_object_ {sizeof(object_t)};
+    std::size_t bytes_total_ {0};
+    raw_allocator_t allocator_ {};
+
+    object_t *ptr(std::size_t i) noexcept { return reinterpret_cast<object_t *>(raw_ + i * bytes_per_object_); }
+    object_t const *ptr(std::size_t i) const noexcept {
+        return reinterpret_cast<object_t const *>(raw_ + i * bytes_per_object_);
+    }
+
+    void destroy_all() noexcept {
+        if constexpr (!std::is_trivially_destructible_v<object_t>)
+            for (std::size_t i = 0; i < objects_count_; ++i) ptr(i)->~object_t();
+    }
+
+    void deallocate() noexcept {
+        if (raw_) {
+            allocator_.deallocate(raw_, bytes_total_);
+            raw_ = nullptr;
+        }
+        objects_count_ = bytes_total_ = 0;
+    }
+
+  public:
+    unique_padded_buffer() = default;
+
+    explicit unique_padded_buffer(allocator_t const &alloc, std::size_t bytes_per_object = sizeof(object_t)) noexcept
+        : bytes_per_object_(bytes_per_object), allocator_(alloc) {}
+
+    unique_padded_buffer(unique_padded_buffer &&o) noexcept
+        : raw_(std::exchange(o.raw_, nullptr)), objects_count_(std::exchange(o.objects_count_, 0)),
+          bytes_per_object_(o.bytes_per_object_), bytes_total_(std::exchange(o.bytes_total_, 0)),
+          allocator_(std::move(o.allocator_)) {}
+
+    unique_padded_buffer &operator=(unique_padded_buffer &&o) noexcept {
+        if (this != &o) {
+            destroy_all();
+            deallocate();
+            raw_ = std::exchange(o.raw_, nullptr);
+            objects_count_ = std::exchange(o.objects_count_, 0);
+            bytes_per_object_ = o.bytes_per_object_;
+            bytes_total_ = std::exchange(o.bytes_total_, 0);
+            allocator_ = std::move(o.allocator_);
+        }
+        return *this;
+    }
+
+    unique_padded_buffer(unique_padded_buffer const &) = delete;
+    unique_padded_buffer &operator=(unique_padded_buffer const &) = delete;
+
+    ~unique_padded_buffer() noexcept {
+        destroy_all();
+        deallocate();
+    }
+
+    bool try_resize(std::size_t new_objects_count) noexcept {
+        destroy_all();
+        deallocate();
+
+        if (new_objects_count == 0) return true;
+
+        std::size_t const total = new_objects_count * bytes_per_object_;
+        auto new_result = allocator_.allocate_at_least(total);
+        if (!new_result) return false;
+
+        raw_ = new_result.ptr;
+        objects_count_ = new_objects_count;
+        bytes_total_ = new_result.bytes;
+
+        for (std::size_t i = 0; i < objects_count_; ++i) ::new (static_cast<void *>(ptr(i))) object_t();
+
+        return true;
+    }
+
+    object_t &only() noexcept {
+        assert(objects_count_ == 1 && "Buffer must contain exactly one object to use `only()`");
+        return *ptr(0);
+    }
+    object_t const &only() const noexcept {
+        assert(objects_count_ == 1 && "Buffer must contain exactly one object to use `only()`");
+        return *ptr(0);
+    }
+
+    object_t &operator[](std::size_t i) noexcept { return *ptr(i); }
+    object_t const &operator[](std::size_t i) const noexcept { return *ptr(i); }
+    object_t *data() noexcept { return ptr(0); }
+    object_t const *data() const noexcept { return ptr(0); }
+    std::size_t size() const noexcept { return objects_count_; }
+    std::size_t stride() const noexcept { return bytes_per_object_; }
+    void set_stride(std::size_t b) noexcept { bytes_per_object_ = b ? b : sizeof(object_t); }
+    explicit operator bool() const noexcept { return raw_ != nullptr && objects_count_ > 0; }
+};
 
 /**
  *  @brief Placeholder type for Parallel Algorithms.
@@ -1120,19 +1258,6 @@ class basic_pool {
     }
 
     /**
-     *  @brief Same as `for_n`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_for_n<fork_type_ const &, index_t> invoker {n, threads_count(), fork};
-        unsafe_for_threads(invoker);
-    }
-
-    /**
      *  @brief Executes uneven tasks on all threads, greedying for work.
      *  @param[in] n The number of times to call the @p fork.
      *  @param[in] fork The callback object, receiving the `prong_t` or the task index as an argument.
@@ -1144,19 +1269,6 @@ class basic_pool {
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
         return {*this, {n, threads_count(), dynamic_progress_, std::forward<fork_type_>(fork)}};
-    }
-
-    /**
-     *  @brief Same as `for_n_dynamic`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n_dynamic(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_for_n_dynamic<fork_type_ const &, index_t> invoker {n, threads_count(), dynamic_progress_, fork};
-        unsafe_for_threads(invoker);
     }
 
 #pragma endregion Indexed Task Scheduling
@@ -1950,31 +2062,6 @@ struct numa_topology {
 using numa_topology_t = numa_topology<>;
 
 /**
- *  @brief Back-ports the C++ 23 `std::allocation_result`. Unlike STL, also contains the page size.
- *  @see https://en.cppreference.com/w/cpp/memory/allocator/allocate_at_least
- */
-template <typename pointer_type_ = char, typename size_type_ = std::size_t>
-struct allocation_result {
-    using pointer_type = pointer_type_;
-    using size_type = size_type_;
-
-    pointer_type ptr {nullptr};   // ? Pointer to the allocated memory, or nullptr if allocation failed
-    size_type count {0};          // ? Number of elements allocated, or 0 if allocation failed
-    size_type bytes_per_page {0}; // ? Reports the page size used for the allocation, if applicable
-
-    constexpr allocation_result() noexcept = default;
-    constexpr allocation_result(pointer_type p, size_type s) noexcept : ptr(p), count(s) {}
-    explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
-    constexpr operator pointer_type() const noexcept { return ptr; }
-
-#if defined(__cpp_lib_allocate_at_least)
-    operator std::allocation_result<pointer_type, size_type>() const noexcept {
-        return std::allocation_result<pointer_type, size_type>(ptr, count);
-    }
-#endif
-};
-
-/**
  *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
  *  @retval true if binding succeeded, false otherwise.
  */
@@ -2065,13 +2152,16 @@ struct linux_numa_allocator {
     size_type default_page_size_ {0}; // ? RAM page size in bytes, typically 4 KB
 
   public:
+    numa_node_id_t node_id() const noexcept { return node_id_; }
+    size_type default_page_size() const noexcept { return default_page_size_; }
+
     constexpr linux_numa_allocator() noexcept = default;
     explicit constexpr linux_numa_allocator(numa_node_id_t id, size_type paging = get_ram_page_size()) noexcept
         : node_id_(id), default_page_size_(paging) {}
 
     template <typename other_type_>
     constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
-        : node_id_(o.node_id_), default_page_size_(o.default_page_size_) {}
+        : node_id_(o.node_id()), default_page_size_(o.default_page_size()) {}
 
     /**
      *  @brief Allocates memory for at least `size` elements of `value_type`.
@@ -2086,24 +2176,24 @@ struct linux_numa_allocator {
 
         // Check if the new size is actually perfectly divisible by the `sizeof(value_type)`
         if (aligned_size_bytes % sizeof(value_type)) return {}; // ! Not a size multiple
-        return allocate(aligned_size_bytes / sizeof(value_type), page_size_bytes);
+        auto result_ptr = allocate(aligned_size_bytes / sizeof(value_type), page_size_bytes);
+        if (!result_ptr) return {}; // ! Allocation failed
+        return {result_ptr, size, aligned_size_bytes, page_size_bytes};
     }
 
     /**
-     *  @brief Allocates memory for `size` elements of `value_type`.
+     *  @brief Allocates a memory for `size` elements of `value_type`.
      *  @param[in] size The number of elements to allocate.
      *  @param[in] page_size_bytes The size of the memory page to allocate, must be a multiple of `sizeof(value_type)`.
      *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
      *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
      */
-    allocation_result<value_type *, size_type> allocate(size_type size, size_type page_size_bytes) noexcept {
+    value_type *allocate(size_type size, size_type page_size_bytes) noexcept {
         size_type const size_bytes = size * sizeof(value_type);
         void *result_ptr = linux_numa_allocate(size_bytes, page_size_bytes, node_id_);
         if (!result_ptr) return {}; // ! Allocation failed
-        return {static_cast<value_type *>(result_ptr), size_bytes, page_size_bytes};
+        return static_cast<value_type *>(result_ptr);
     }
-
-    void deallocate(value_type *p, size_type n) noexcept { linux_numa_free(p, n * sizeof(value_type)); }
 
     /**
      *  @brief Allocates memory for at least `size` elements of `value_type`.
@@ -2133,7 +2223,7 @@ struct linux_numa_allocator {
      *  @return allocation_result with a pointer to the allocated memory and the number of elements allocated.
      *  @retval empty object if the allocation failed or the size is not a multiple of `sizeof(value_type)`.
      */
-    allocation_result<value_type *, size_type> allocate(size_type size) noexcept {
+    value_type *allocate(size_type size) noexcept {
         // Go through all of the typical Linux page sizes,
         // finding the largest one that makes sense and doesn't fail.
         size_type const size_bytes = size * sizeof(value_type);
@@ -2148,6 +2238,8 @@ struct linux_numa_allocator {
 
         return allocate(size, default_page_size_);
     }
+
+    void deallocate(value_type *p, size_type n) noexcept { linux_numa_free(p, n * sizeof(value_type)); }
 
     template <typename other_type_>
     bool operator==(linux_numa_allocator<other_type_> const &o) const noexcept {
@@ -2238,8 +2330,7 @@ struct linux_colocated_pool {
      *  at the first position. If the @b `numa_pin_to_core_k` granularity is used, the `numa_pthread_t::core_id`
      *  will be set to the individual core IDs.
      */
-    numa_pthread_t *pthreads_ {nullptr};
-    thread_index_t pthreads_count_ {0};
+    unique_padded_buffer<numa_pthread_t, numa_pthread_allocator_t> pthreads_ {};
 
     thread_index_t first_thread_ {0};                       // ? The index of the first thread to start from
     caller_exclusivity_t exclusivity_ {caller_inclusive_k}; // ? Whether the caller thread is included in the count
@@ -2317,7 +2408,7 @@ struct linux_colocated_pool {
      *  @retval 0 if the thread-pool is not initialized, 1 if only the main thread is used.
      *  @note This API is @b not synchronized.
      */
-    thread_index_t threads_count() const noexcept { return pthreads_count_; }
+    thread_index_t threads_count() const noexcept { return pthreads_.size(); }
 
     /**
      *  @brief Reports if the current calling thread will be used for broadcasts.
@@ -2365,17 +2456,14 @@ struct linux_colocated_pool {
                    numa_pin_granularity_t const pin_granularity = numa_pin_to_core_k,
                    thread_index_t const first_thread = 0, index_t const colocation_index = 0) noexcept {
 
-        if (threads == 0) return false;         // ! Can't have zero threads working on something
-        if (pthreads_count_ != 0) return false; // ! Already initialized
+        if (threads == 0) return false;          // ! Can't have zero threads working on something
+        if (pthreads_.size() != 0) return false; // ! Already initialized
 
         // Allocate the thread pool of `numa_pthread_t` objects
         allocator_ = linux_numa_allocator_t {node.node_id};
         numa_pthread_allocator_t pthread_allocator {allocator_};
-        numa_pthread_t *const pthreads = pthread_allocator.allocate(threads);
-        if (!pthreads) {
-            pthread_allocator.deallocate(pthreads, threads);
-            return false; // ! Allocation failed
-        }
+        unique_padded_buffer<numa_pthread_t, numa_pthread_allocator_t> pthreads {pthread_allocator};
+        if (!pthreads.try_resize(threads)) return false; // ! Allocation failed
 
         // Allocate the `cpu_set_t` structure, assuming we may be on a machine
         // with a ridiculously large number of cores.
@@ -2384,17 +2472,14 @@ struct linux_colocated_pool {
 
         // Before we start the threads, make sure we set some of the shared
         // state variables that will be used in the `_posix_worker_loop` function.
-        pthreads_ = pthreads;
-        pthreads_count_ = threads;
+        pthreads_ = std::move(pthreads);
         first_thread_ = first_thread;
         colocation_index_ = colocation_index;
         exclusivity_ = exclusivity;
         numa_node_id_ = node.node_id;
         pin_granularity_ = pin_granularity;
         auto reset_on_failure = [&]() noexcept {
-            pthread_allocator.deallocate(pthreads, threads);
-            pthreads_ = nullptr;
-            pthreads_count_ = 0;
+            pthreads_ = {};
             numa_node_id_ = -1;
             pin_granularity_ = numa_pin_to_core_k;
         };
@@ -2438,7 +2523,7 @@ struct linux_colocated_pool {
 
         // Name all of the threads
         char16_name_t name;
-        for (thread_index_t i = 0; i < pthreads_count_; ++i) {
+        for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
             fill_thread_name(                                    //
                 name, name_,                                     //
                 static_cast<std::size_t>(node.first_core_id[i]), //
@@ -2452,7 +2537,7 @@ struct linux_colocated_pool {
         std::size_t const cpu_set_size = CPU_ALLOC_SIZE(max_possible_cores);
         if (pin_granularity == numa_pin_to_core_k) {
             // Configure a mask for each thread, pinning it to a specific core
-            for (thread_index_t i = 0; i < pthreads_count_; ++i) {
+            for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
                 // Assign to a core in a round-robin fashion
                 numa_core_id_t cpu = node.first_core_id[i % node.core_count];
                 assert(cpu >= 0 && "Invalid CPU core ID");
@@ -2478,7 +2563,7 @@ struct linux_colocated_pool {
                    "The CPU set must match the number of cores in the NUMA node");
 
             // Assign the same mask to all threads
-            for (thread_index_t i = 0; i < pthreads_count_; ++i) {
+            for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
                 pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
                 int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
@@ -2539,7 +2624,7 @@ struct linux_colocated_pool {
 
         // If the workers were indeed "chilling", we can inform the scheduler to wake them up.
         if (was_chilling) {
-            for (std::size_t i = use_caller_thread; i < pthreads_count_; ++i) {
+            for (std::size_t i = use_caller_thread; i < pthreads_.size(); ++i) {
                 pid_t const pthread_id = pthreads_[i].id.load(std::memory_order_acquire);
                 if (pthread_id < 0) continue; // ? Not set yet
                 sched_param param {};
@@ -2580,7 +2665,7 @@ struct linux_colocated_pool {
      */
     void terminate() noexcept {
         assert(threads_to_sync_.load(std::memory_order_seq_cst) == 0); // ! No tasks must be running
-        if (pthreads_count_ == 0) return;                              // ? Uninitialized
+        if (pthreads_.size() == 0) return;                             // ? Uninitialized
 
         numa_pthread_allocator_t pthread_allocator {allocator_};
 
@@ -2589,7 +2674,7 @@ struct linux_colocated_pool {
 
         caller_exclusivity_t const exclusivity = caller_exclusivity();
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
-        thread_index_t const threads = pthreads_count_;
+        thread_index_t const threads = pthreads_.size();
         for (thread_index_t i = use_caller_thread; i != threads; ++i) {
             void *returned_value = nullptr;
             pthread_t const pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
@@ -2598,11 +2683,7 @@ struct linux_colocated_pool {
         }
 
         // Deallocate the handles and IDs
-        pthread_allocator.deallocate(pthreads_, threads);
-
-        // Prepare for future spawns
-        pthreads_count_ = 0;
-        pthreads_ = nullptr;
+        pthreads_ = {};
 
         // Unpin the caller thread if it was part of this pool and was pinned to the NUMA node.
         if (use_caller_thread) _reset_affinity();
@@ -2633,7 +2714,7 @@ struct linux_colocated_pool {
         // which will reduce the power consumption:
         caller_exclusivity_t const exclusivity = caller_exclusivity();
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
-        for (std::size_t i = use_caller_thread; i < pthreads_count_; ++i) {
+        for (std::size_t i = use_caller_thread; i < pthreads_.size(); ++i) {
             pid_t const pthread_id = pthreads_[i].id.load(std::memory_order_acquire);
             if (pthread_id < 0) continue; // ? Not set yet
             sched_param param {};
@@ -2776,8 +2857,8 @@ struct linux_colocated_pool {
         thread_index_t local_thread_index = 0;
         if (mood == mood_t::grind_k) {
             // We locate the thread index by enumerating the `pthreads_` array
-            numa_pthread_t *const numa_pthreads = pool->pthreads_;
-            thread_index_t const numa_pthreads_count = pool->pthreads_count_;
+            auto &numa_pthreads = pool->pthreads_;
+            thread_index_t const numa_pthreads_count = pool->pthreads_.size();
             pthread_t const thread_handle = ::pthread_self();
             for (local_thread_index = 0; local_thread_index < numa_pthreads_count; ++local_thread_index)
                 if (::pthread_equal(numa_pthreads[local_thread_index].handle.load(std::memory_order_relaxed),
@@ -3027,17 +3108,16 @@ struct linux_distributed_pool {
         alignas(alignment_k) linux_colocated_pool_t pool {};
     };
 
+    using unique_colocation_buffer_t = unique_padded_buffer<colocation_t, linux_numa_allocator_t>;
+    using colocations_t = unique_padded_buffer<unique_colocation_buffer_t, linux_numa_allocator_t>;
     /**
-     *  A heap allocated array of individual thread pools. Each one of them is allocated on its own NUMA node.
-     *  They are sorted/partitioned in such a way that the first one @b always contains the current thread.
-     *  Moreover, assuming NUMA allocators operate at @b page-granularity, each "local pool" comes with its
-     *  own "scratch space" arena, that can be used for temporary allocations.
+     *  @brief A heap allocated array of individual thread pools.
+     *
+     *  Similar to a @b `std::vector<std::unique_ptr<linux_colocated_pool_t>>`, but with each colocation placed
+     *  on its own NUMA node, and with a custom allocator. All the entries are sorted/grouped by the colocation
+     *  index in ascending order, and the first one always contains the current thread.
      */
-    colocation_t **colocations_ {nullptr}; // ? Array of thread pools for each NUMA node
-    std::size_t colocations_count_ {0};    // ? Number of NUMA nodes in the topology
-
-    using colocation_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<colocation_t>;
-    using colocations_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<colocation_t *>;
+    colocations_t colocations_ {};
 
   public:
     linux_distributed_pool(linux_distributed_pool &&) = delete;
@@ -3056,9 +3136,12 @@ struct linux_distributed_pool {
 
     ~linux_distributed_pool() noexcept { terminate(); }
 
-    /** @brief Checks if the thread-pool's core synchronization points are lock-free. */
+    /**
+     *  @brief Checks if the thread-pool's core synchronization points are lock-free.
+     *  @note Only valid after the `try_spawn` call.
+     */
     bool is_lock_free() const noexcept {
-        return colocations_ && colocations_[0] && colocations_[0]->pool.is_lock_free();
+        return colocations_ && colocations_[0] && colocations_[0].only().pool.is_lock_free();
     }
 
     /**
@@ -3073,11 +3156,7 @@ struct linux_distributed_pool {
      */
     std::size_t memory_usage() const noexcept {
         std::size_t total_bytes = sizeof(linux_distributed_pool);
-        for (std::size_t i = 0; i < colocations_count_; ++i) {
-            colocation_t *colocation = colocations_[i];
-            assert(colocation && "Colocation can't be NULL");
-            total_bytes += colocation->pool.memory_usage();
-        }
+        for (std::size_t i = 0; i < colocations_.size(); ++i) total_bytes += colocations_[i].only().pool.memory_usage();
         return total_bytes;
     }
 
@@ -3154,38 +3233,31 @@ struct linux_distributed_pool {
         numa_node_t const &first_node = new_topology.node(0);
         numa_node_id_t const first_node_id = first_node.node_id; // ? Typically zero
         linux_numa_allocator_t allocator {first_node_id};
-        colocations_allocator_t colocations_allocator {allocator};
         index_t const colocations_count = std::min(new_topology.nodes_count(), threads);
 
-        colocation_t **colocations = colocations_allocator.allocate(colocations_count);
-        if (!colocations) return false; // ! Allocation failed
+        colocations_t colocations(allocator);
+        if (!colocations.try_resize(colocations_count)) return false; // ! Allocation failed
 
         // Now allocate each "local pool" on its own NUMA node
-        std::fill_n(colocations, colocations_count, nullptr);
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
             numa_node_t const &node = new_topology.node(colocation_index);
             numa_node_id_t const node_id = node.node_id;
-            colocation_allocator_t allocator {node_id};
-            colocation_t *pool = allocator.allocate(1);
-            colocations[colocation_index] = pool;
+            linux_numa_allocator_t allocator {node_id};
+            unique_colocation_buffer_t colocation_padded_buffer(allocator);
+            colocation_padded_buffer.try_resize(1);
+            colocations[colocation_index] = std::move(colocation_padded_buffer);
         }
 
         auto reset_on_failure = [&]() noexcept {
             for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
-                colocation_t *colocation = colocations[colocation_index];
-                if (!colocation) continue;
-                colocation->pool.terminate(); // ? Stop the pool if it was started
-                numa_node_t const &node = new_topology.node(colocation_index);
-                numa_node_id_t const node_id = node.node_id;
-                colocation_allocator_t allocator {node_id};
-                allocator.deallocate(colocation, 1); // ? Reclaim the memory
+                if (colocations[colocation_index].size() == 0) continue; // ? No pool allocated
+                colocations[colocation_index].only().pool.terminate();   // ? Stop the pool if it was started
             }
-            colocations_allocator.deallocate(colocations, colocations_count);
         };
 
         // If any one of the allocations failed, we need to clean up
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
-            if (colocations[colocation_index]) continue;
+            if (colocations[colocation_index].size() == 1) continue;
             reset_on_failure();
             return false; // ! Allocation failed
         }
@@ -3195,26 +3267,25 @@ struct linux_distributed_pool {
         // - others are always "exclusive" to the caller thread.
         bool const use_caller_thread = exclusivity == caller_inclusive_k;
         indexed_split<thread_index_t> threads_per_node(threads, colocations_count);
-        if (!colocations[0]->pool.try_spawn(first_node, threads_per_node[0].count, exclusivity, pin_granularity, 0,
-                                            0)) {
+        if (!colocations[0].only().pool.try_spawn(first_node, threads_per_node[0].count, exclusivity, pin_granularity,
+                                                  0, 0)) {
             reset_on_failure();
             return false; // ! Spawning failed
         }
 
         for (index_t colocation_index = 1; colocation_index < colocations_count; ++colocation_index) {
             numa_node_t const &node = new_topology.node(colocation_index);
-            colocation_t *colocation = colocations[colocation_index];
-            if (!colocation->pool.try_spawn(node, threads_per_node[colocation_index].count, caller_exclusive_k,
-                                            pin_granularity, threads_per_node[colocation_index].first,
-                                            colocation_index)) {
+            colocation_t &colocation = colocations[colocation_index].only();
+            if (!colocation.pool.try_spawn(node, threads_per_node[colocation_index].count, caller_exclusive_k,
+                                           pin_granularity, threads_per_node[colocation_index].first,
+                                           colocation_index)) {
                 reset_on_failure();
                 return false; // ! Spawning failed
             }
         }
 
         topology_ = std::move(new_topology);
-        colocations_ = colocations;
-        colocations_count_ = colocations_count;
+        colocations_ = std::move(colocations);
         threads_count_ = threads;
         exclusivity_ = exclusivity;
         return true;
@@ -3242,29 +3313,19 @@ struct linux_distributed_pool {
     _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
         assert(colocations_ && "Thread pools must be initialized before broadcasting");
-        assert(colocations_[0] && "At least one colocation must exist");
 
         // Submit to every thread pool
-        for (std::size_t i = 1; i < colocations_count_; ++i) {
-            colocation_t *colocation = colocations_[i];
-            assert(colocation && "Colocation can't be NULL");
-            colocation->pool.unsafe_for_threads(fork);
-        }
-        colocations_[0]->pool.unsafe_for_threads(fork);
+        for (std::size_t i = 1; i < colocations_.size(); ++i) colocations_[i].only().pool.unsafe_for_threads(fork);
+        colocations_[0].only().pool.unsafe_for_threads(fork);
     }
 
     /** @brief Blocks the calling thread until the currently broadcasted task finishes. */
     void unsafe_join() noexcept {
         assert(colocations_ && "Thread pools must be initialized before broadcasting");
-        assert(colocations_[0] && "At least one colocation must exist");
 
         // Wait for everyone to finish
-        for (std::size_t i = 1; i < colocations_count_; ++i) {
-            colocation_t *colocation = colocations_[i];
-            assert(colocation && "Colocation can't be NULL");
-            colocation->pool.unsafe_join();
-        }
-        colocations_[0]->pool.unsafe_join();
+        for (std::size_t i = 1; i < colocations_.size(); ++i) colocations_[i].only().pool.unsafe_join();
+        colocations_[0].only().pool.unsafe_join();
     }
 
 #pragma endregion Core API
@@ -3284,28 +3345,10 @@ struct linux_distributed_pool {
      *  - when you want to @b restart with a different number of threads.
      */
     void terminate() noexcept {
-        if (colocations_ == nullptr) return; // ? Uninitialized
-        for (std::size_t i = 0; i < colocations_count_; ++i) {
-            colocation_t *colocation = colocations_[i];
-            assert(colocation && "Colocation can't be NULL");
-            colocation->pool.terminate();
+        if (!colocations_) return; // ? Uninitialized
+        for (std::size_t i = 0; i < colocations_.size(); ++i) colocations_[i].only().pool.terminate();
 
-            // Deallocate the colocation
-            numa_node_t const &node = topology_.node(i);
-            numa_node_id_t const node_id = node.node_id;
-            colocation_allocator_t allocator {node_id};
-            allocator.deallocate(colocation, 1); // ? Reclaim the memory
-            colocations_[i] = nullptr;           // ? Clear the pointer
-        }
-
-        // Deallocate the colocations pointers array
-        numa_node_t const &first_node = topology_.node(0);
-        numa_node_id_t const first_node_id = first_node.node_id; // ? Typically zero
-        colocations_allocator_t colocations_allocator {first_node_id};
-        colocations_allocator.deallocate(colocations_, colocations_count_);
-
-        colocations_ = nullptr;
-        colocations_count_ = 0;
+        colocations_ = {};
         threads_count_ = 0;
         exclusivity_ = caller_inclusive_k;
     }
@@ -3324,11 +3367,8 @@ struct linux_distributed_pool {
      */
     void sleep(std::size_t wake_up_periodicity_micros) noexcept {
         assert(wake_up_periodicity_micros > 0 && "Sleep length must be positive");
-        for (std::size_t i = 0; i < colocations_count_; ++i) {
-            colocation_t *colocation = colocations_[i];
-            assert(colocation && "Colocation can't be NULL");
-            colocation->pool.sleep(wake_up_periodicity_micros);
-        }
+        for (std::size_t i = 0; i < colocations_.size(); ++i)
+            colocations_[i].only().pool.sleep(wake_up_periodicity_micros);
     }
 
 #pragma endregion Control Flow
@@ -3389,7 +3429,7 @@ struct linux_distributed_pool {
     /**
      *  @brief Number of individual sub-pool with the same NUMA-locality and QoS.
      */
-    index_t colocations_count() const noexcept { return colocations_count_; }
+    index_t colocations_count() const noexcept { return colocations_.size(); }
 
     /**
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
@@ -3398,8 +3438,8 @@ struct linux_distributed_pool {
      */
     thread_index_t threads_count(index_t colocation) const noexcept {
         assert(colocations_ && "Local pools must be initialized");
-        assert(colocation < colocations_count_ && "Local pool index out of bounds");
-        return colocations_[colocation]->pool.threads_count();
+        assert(colocation < colocations_.size() && "Local pool index out of bounds");
+        return colocations_[colocation].only().pool.threads_count();
     }
 
     /**
@@ -3409,23 +3449,23 @@ struct linux_distributed_pool {
      */
     thread_index_t thread_local_index(thread_index_t global_thread_index, index_t colocation) const noexcept {
         assert(colocations_ && "Local pools must be initialized");
-        assert(colocation < colocations_count_ && "Local pool index out of bounds");
-        return global_thread_index - colocations_[colocation]->pool.first_thread();
+        assert(colocation < colocations_.size() && "Local pool index out of bounds");
+        return global_thread_index - colocations_[colocation].only().pool.first_thread();
     }
 
     index_t thread_colocation(thread_index_t global_thread_index) const noexcept {
         index_t colocation_index = 0;
-        for (; colocation_index < colocations_count_; ++colocation_index) {
-            colocation_t *colocation = colocations_[colocation_index];
-            if (global_thread_index < colocation->pool.first_thread()) continue;
-            if (global_thread_index < colocation->pool.first_thread() + colocation->pool.threads_count())
+        for (; colocation_index < colocations_.size(); ++colocation_index) {
+            colocation_t const &colocation = colocations_[colocation_index].only();
+            if (global_thread_index < colocation.pool.first_thread()) continue;
+            if (global_thread_index < colocation.pool.first_thread() + colocation.pool.threads_count())
                 return colocation_index;
         }
         return colocation_index; // ? Not found
     }
 
     std::atomic<index_t> &unsafe_dynamic_progress_ref(index_t colocation) noexcept {
-        return colocations_[colocation]->pool.unsafe_dynamic_progress_ref();
+        return colocations_[colocation].only().pool.unsafe_dynamic_progress_ref();
     }
 
 #pragma endregion Colocations Compatibility
