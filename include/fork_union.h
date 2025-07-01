@@ -650,59 +650,9 @@ void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_
 void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context);
 
 /**
- *  @brief Distributes `n` tasks across threads without blocking.
- *  @param[in] pool Thread pool handle, must not be NULL and initialized.
- *  @param[in] n Number of tasks to execute, may be 0 (no-op).
- *  @param[in] callback Function to execute for each task, must not be NULL if n > 0.
- *  @param[in] context User-defined context passed to the callback, may be NULL.
- *  @note This API returns immediately without waiting for completion.
- *
- *  This is the non-blocking variant of `fu_pool_for_n`. Tasks are distributed
- *  using the same balanced chunking strategy, but execution happens asynchronously.
- *
- *  Same lifetime and synchronization requirements as `fu_pool_unsafe_for_threads`.
- *  @sa `fu_pool_unsafe_join` for synchronization, `fu_pool_for_n` for blocking variant.
- */
-void fu_pool_unsafe_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
-
-/**
- *  @brief Distributes `n` variable-duration tasks using work-stealing without blocking.
- *  @param[in] pool Thread pool handle, must not be NULL and initialized.
- *  @param[in] n Number of tasks to execute, may be 0 (no-op).
- *  @param[in] callback Function to execute for each task, must not be NULL if n > 0.
- *  @param[in] context User-defined context passed to the callback, may be NULL.
- *  @note This API returns immediately without waiting for completion.
- *
- *  This is the non-blocking variant of `fu_pool_for_n_dynamic`. Tasks are
- *  distributed using the same work-stealing strategy, but execution happens
- *  asynchronously.
- *
- *  Same lifetime and synchronization requirements as `fu_pool_unsafe_for_threads`.
- *  @sa `fu_pool_unsafe_join` for synchronization, `fu_pool_for_n_dynamic` for blocking variant.
- */
-void fu_pool_unsafe_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context);
-
-/**
- *  @brief Distributes `n` tasks in slices without blocking.
- *  @param[in] pool Thread pool handle, must not be NULL and initialized.
- *  @param[in] n Total number of tasks to split across threads, may be 0 (no-op).
- *  @param[in] callback Function to execute for each slice, must not be NULL if n > 0.
- *  @param[in] context User-defined context passed to the callback, may be NULL.
- *  @note This API returns immediately without waiting for completion.
- *
- *  This is the non-blocking variant of `fu_pool_for_slices`. Tasks are
- *  distributed using the same slicing strategy, but execution happens
- *  asynchronously.
- *
- *  Same lifetime and synchronization requirements as `fu_pool_unsafe_for_threads`.
- *  @sa `fu_pool_unsafe_join` for synchronization, `fu_pool_for_slices` for blocking variant.
- */
-void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context);
-
-/**
  *  @brief Blocks the calling thread until the current parallel operation completes.
  *  @param[in] pool Thread pool handle, must not be NULL and initialized.
- *  @note This API must be called after any `fu_pool_unsafe_*` operation.
+ *  @note This API must be called after the `fu_pool_unsafe_for_threads` operation.
  *
  *  This function provides the synchronization point for all non-blocking pool
  *  operations. It ensures that:
@@ -726,7 +676,7 @@ void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callba
  *  fu_pool_unsafe_join(pool);
  *  use_processed_data(void);
  *  @endcode
- *  @sa All `fu_pool_unsafe_*` functions require this for proper synchronization.
+ *  @sa `fu_pool_unsafe_for_threads` for the entry point, `fu_pool_for_threads` for blocking execution.
  */
 void fu_pool_unsafe_join(fu_pool_t *pool);
 

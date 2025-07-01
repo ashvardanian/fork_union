@@ -320,12 +320,12 @@ search_result_t search(std::span<float, dimensions> query) {
 
 In a dream world, we would call `distributed_pool.for_n`, but there is no clean way to make the scheduling processes aware of the data distribution in an arbitrary application, so that's left to the user.
 Calling `linux_colocated_pool::for_slices` on individual NUMA-node-specific colocated pools is the cheapest general-purpose recipe for Big Data applications.
-For more flexibility around building higher-level low-latency systems, there are unsafe APIs expecting you to manually "join" the broadcasted calls, like `unsafe_for_slices` and `unsafe_join`.
+For more flexibility around building higher-level low-latency systems, there are unsafe APIs expecting you to manually "join" the broadcasted calls, like `unsafe_for_threads` and `unsafe_join`.
 Instead of hard-coding the `distributed_pool[0]` and `distributed_pool[1]`, we can iterate through them without keeping the lifetime-preserving handle to the passed `concurrent_searcher`:
 
 ```cpp
 for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
-    distributed_pool[colocation].unsafe_for_slices(..., concurrent_searcher);
+    distributed_pool[colocation].unsafe_for_threads(..., concurrent_searcher);
 for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
     distributed_pool[colocation].unsafe_join();
 ```

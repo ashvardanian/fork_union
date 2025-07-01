@@ -1102,18 +1102,6 @@ class basic_pool {
     }
 
     /**
-     *  @brief Same as `for_slices`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving the first @b `prong_t` and the slice length.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
-    void unsafe_for_slices(index_t const n, fork_type_ &fork) noexcept {
-        invoke_for_slices<fork_type_ const &, index_t> invoker {n, threads_count(), fork};
-        unsafe_for_threads(invoker);
-    }
-
-    /**
      *  @brief Distributes @p `n` similar duration calls between threads.
      *  @param[in] n The number of times to call the @p fork.
      *  @param[in] fork The callback object, receiving @b `prong_t` or a call index as an argument.
@@ -2702,19 +2690,6 @@ struct linux_colocated_pool {
     }
 
     /**
-     *  @brief Same as `for_n`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_for_n<fork_type_ const &, index_t> invoker {n, threads_count(), fork};
-        unsafe_for_threads(invoker);
-    }
-
-    /**
      *  @brief Executes uneven tasks on all threads, greedying for work.
      *  @param[in] n The number of times to call the @p fork.
      *  @param[in] fork The callback object, receiving the `prong_t` or the task index as an argument.
@@ -2726,19 +2701,6 @@ struct linux_colocated_pool {
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
         return {*this, {n, threads_count(), dynamic_progress_, std::forward<fork_type_>(fork)}};
-    }
-
-    /**
-     *  @brief Same as `for_n_dynamic`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n_dynamic(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_for_n_dynamic<fork_type_ const &, index_t> invoker {n, dynamic_progress_, fork};
-        unsafe_for_threads(invoker);
     }
 
 #pragma endregion Indexed Task Scheduling
@@ -3388,20 +3350,6 @@ struct linux_distributed_pool {
     }
 
     /**
-     *  @brief Same as `for_slices`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving the first @b `prong_t` and the slice length.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
-    void unsafe_for_slices(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_distributed_for_slices<linux_distributed_pool, fork_type_ const &, index_t> invoker {
-            *this, n, threads_count(), fork};
-        unsafe_for_threads(invoker);
-    }
-
-    /**
      *  @brief Distributes @p `n` similar duration calls between threads.
      *  @param[in] n The number of times to call the @p fork.
      *  @param[in] fork The callback object, receiving @b `prong_t` or a call index as an argument.
@@ -3420,20 +3368,6 @@ struct linux_distributed_pool {
     }
 
     /**
-     *  @brief Same as `for_n`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_distributed_for_n<linux_distributed_pool, fork_type_ const &, index_t> invoker {*this, n,
-                                                                                               threads_count(), fork};
-        unsafe_for_threads(invoker);
-    }
-
-    /**
      *  @brief Executes uneven tasks on all threads, greedying for work.
      *  @param[in] n The number of times to call the @p fork.
      *  @param[in] fork The callback object, receiving the `prong_t` or the task index as an argument.
@@ -3446,19 +3380,6 @@ struct linux_distributed_pool {
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
         return {*this, {*this, n, std::forward<fork_type_>(fork)}};
-    }
-
-    /**
-     *  @brief Same as `for_n_dynamic`, but doesn't wait for the result or guarantee fork lifetime.
-     *  @param[in] n The total length of the range to split between threads.
-     *  @param[in] fork The callback @b reference, receiving @b `prong_t` objects.
-     */
-    template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
-    void unsafe_for_n_dynamic(index_t const n, fork_type_ &fork) noexcept {
-
-        invoke_distributed_for_n_dynamic<linux_distributed_pool, fork_type_ const &, index_t> invoker {*this, n, fork};
-        unsafe_for_threads(invoker);
     }
 
 #pragma endregion Indexed Task Scheduling

@@ -111,9 +111,9 @@ static bool test_try_spawn_success() noexcept {
     return true;
 }
 
-/** @brief Make sure that `broadcast` is called from each thread. */
+/** @brief Make sure that `for_threads` is called from each thread. */
 template <typename make_pool_type_ = make_pool_t>
-static bool test_broadcast() noexcept {
+static bool test_for_threads() noexcept {
 
     auto maker = make_pool_type_ {};
     auto pool = maker.construct();
@@ -123,6 +123,26 @@ static bool test_broadcast() noexcept {
     pool.for_threads([&](std::size_t const thread_index) noexcept { //
         visited[thread_index].store(true, std::memory_order_relaxed);
     });
+
+    for (std::size_t i = 0; i < pool.threads_count(); ++i)
+        if (!visited[i]) return false;
+    return true;
+}
+
+/** @brief Make sure that `unsafe_for_threads` is called from each thread. */
+template <typename make_pool_type_ = make_pool_t>
+static bool test_unsafe_for_threads() noexcept {
+
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    std::vector<std::atomic<bool>> visited(pool.threads_count());
+    auto on_each_thread = [&](std::size_t const thread_index) noexcept {
+        visited[thread_index].store(true, std::memory_order_relaxed);
+    };
+    pool.unsafe_for_threads(on_each_thread);
+    pool.unsafe_join();
 
     for (std::size_t i = 0; i < pool.threads_count(); ++i)
         if (!visited[i]) return false;
@@ -438,7 +458,8 @@ int main(void) {
         // Actual thread-pools
         {"`try_spawn` zero threads", test_try_spawn_zero},                       //
         {"`try_spawn` normal", test_try_spawn_success},                          //
-        {"`broadcast` dispatch", test_broadcast},                                //
+        {"`for_threads` dispatch", test_for_threads},                            //
+        {"`unsafe_for_threads` dispatch", test_unsafe_for_threads},              //
         {"`caller_exclusive_k` calls", test_exclusivity},                        //
         {"`for_n` for uncomfortable input size", test_uncomfortable_input_size}, //
         {"`for_n` static scheduling", test_for_n},                               //
@@ -449,7 +470,8 @@ int main(void) {
 #if FU_ENABLE_NUMA
         // Uniform Memory Access (UMA) tests for threads pinned to the same NUMA node
         {"UMA `try_spawn` normal", test_try_spawn_success<make_linux_colocated_pool_t>},
-        {"UMA `broadcast` dispatch", test_broadcast<make_linux_colocated_pool_t>},
+        {"UMA `for_threads` dispatch", test_for_threads<make_linux_colocated_pool_t>},
+        {"UMA `unsafe_for_threads` dispatch", test_unsafe_for_threads<make_linux_colocated_pool_t>},
         {"UMA `caller_exclusive_k` calls", test_exclusivity<make_linux_colocated_pool_t>},
         {"UMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_colocated_pool_t>},
         {"UMA `for_n` static scheduling", test_for_n<make_linux_colocated_pool_t>},
@@ -459,7 +481,8 @@ int main(void) {
         {"UMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_colocated_pool_t>},
         // Non-Uniform Memory Access (NUMA) tests for threads addressing all NUMA nodes
         {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_distributed_pool_t>},
-        {"NUMA `broadcast` dispatch", test_broadcast<make_linux_distributed_pool_t>},
+        {"NUMA `for_threads` dispatch", test_for_threads<make_linux_distributed_pool_t>},
+        {"NUMA `unsafe_for_threads` dispatch", test_unsafe_for_threads<make_linux_distributed_pool_t>},
         {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_distributed_pool_t>},
         {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_distributed_pool_t>},
         {"NUMA `for_n` static scheduling", test_for_n<make_linux_distributed_pool_t>},
