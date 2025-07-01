@@ -132,18 +132,30 @@ char const *fu_capabilities_string(void) {
 }
 
 size_t fu_count_logical_cores(void) {
+#if FU_ENABLE_NUMA
     if (!globals_initialize()) return 0;
     return global_numa_topology.threads_count();
+#else
+    return std::thread::hardware_concurrency();
+#endif
 }
 
 size_t fu_count_colocations(void) {
+#if FU_ENABLE_NUMA
     if (!globals_initialize()) return 0;
     return global_numa_topology.nodes_count();
+#else
+    return 1;
+#endif
 }
 
 size_t fu_count_numa_nodes(void) {
+#if FU_ENABLE_NUMA
     if (!globals_initialize()) return 0;
     return global_numa_topology.nodes_count();
+#else
+    return 1;
+#endif
 }
 
 size_t fu_count_quality_levels(void) {
@@ -152,10 +164,14 @@ size_t fu_count_quality_levels(void) {
 }
 
 size_t fu_volume_huge_pages(size_t numa_node_index) {
+#if FU_ENABLE_NUMA
     size_t total_volume = 0;
     auto const &node = global_numa_topology.node(numa_node_index);
     for (auto const &page_size : node.page_sizes) total_volume += page_size.bytes_per_page * page_size.free_pages;
     return total_volume;
+#else
+    return 0;
+#endif
 }
 
 #pragma endregion - Metadata
