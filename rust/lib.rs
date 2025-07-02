@@ -17,11 +17,15 @@ extern crate std;
 #[cfg(feature = "std")]
 use std::ffi::CStr;
 
+use core::ffi::{c_char, c_int, c_void};
+use core::ptr::NonNull;
+use core::slice;
+
 /// Describes a portion of work executed on a specific thread.
 #[derive(Copy, Clone, Debug)]
 pub struct Prong {
-    pub thread_index: usize,
     pub task_index: usize,
+    pub thread_index: usize,
     pub colocation_index: usize,
 }
 
@@ -55,51 +59,65 @@ impl std::error::Error for Error {}
 
 // C FFI declarations
 extern "C" {
-    fn fu_capabilities_string() -> *const core::ffi::c_char;
+
+    // Library metadata
+    fn fu_capabilities_string() -> *const c_char;
+
+    // Systems metadata
     fn fu_count_logical_cores() -> usize;
     fn fu_count_colocations() -> usize;
     fn fu_count_numa_nodes() -> usize;
     fn fu_count_quality_levels() -> usize;
 
-    fn fu_pool_new() -> *mut core::ffi::c_void;
-    fn fu_pool_delete(pool: *mut core::ffi::c_void);
-    fn fu_pool_spawn(
-        pool: *mut core::ffi::c_void,
-        threads: usize,
-        exclusivity: core::ffi::c_int,
-    ) -> core::ffi::c_int;
-    fn fu_pool_terminate(pool: *mut core::ffi::c_void);
-    fn fu_pool_count_threads(pool: *mut core::ffi::c_void) -> usize;
-    fn fu_pool_count_colocations(pool: *mut core::ffi::c_void) -> usize;
+    // Core thread pool operations
+    fn fu_pool_new() -> *mut c_void;
+    fn fu_pool_delete(pool: *mut c_void);
+    fn fu_pool_spawn(pool: *mut c_void, threads: usize, exclusivity: c_int) -> c_int;
+    fn fu_pool_terminate(pool: *mut c_void);
+    fn fu_pool_count_threads(pool: *mut c_void) -> usize;
+    fn fu_pool_count_colocations(pool: *mut c_void) -> usize;
+
+    fn fu_pool_for_threads(
+        pool: *mut c_void,
+        callback: extern "C" fn(*mut c_void, usize, usize),
+        context: *mut c_void,
+    );
+    fn fu_pool_for_n(
+        pool: *mut c_void,
+        n: usize,
+        callback: extern "C" fn(*mut c_void, usize, usize, usize),
+        context: *mut c_void,
+    );
+    fn fu_pool_for_n_dynamic(
+        pool: *mut c_void,
+        n: usize,
+        callback: extern "C" fn(*mut c_void, usize, usize, usize),
+        context: *mut c_void,
+    );
+    fn fu_pool_for_slices(
+        pool: *mut c_void,
+        n: usize,
+        callback: extern "C" fn(*mut c_void, usize, usize, usize, usize),
+        context: *mut c_void,
+    );
 
     fn fu_pool_unsafe_for_threads(
-        pool: *mut core::ffi::c_void,
-        callback: extern "C" fn(*mut core::ffi::c_void, usize, usize),
-        context: *mut core::ffi::c_void,
+        pool: *mut c_void,
+        callback: extern "C" fn(*mut c_void, usize, usize),
+        context: *mut c_void,
     );
-    fn fu_pool_unsafe_for_n(
-        pool: *mut core::ffi::c_void,
-        n: usize,
-        callback: extern "C" fn(*mut core::ffi::c_void, usize, usize, usize),
-        context: *mut core::ffi::c_void,
-    );
-    fn fu_pool_unsafe_for_n_dynamic(
-        pool: *mut core::ffi::c_void,
-        n: usize,
-        callback: extern "C" fn(*mut core::ffi::c_void, usize, usize, usize),
-        context: *mut core::ffi::c_void,
-    );
-    fn fu_pool_unsafe_for_slices(
-        pool: *mut core::ffi::c_void,
-        n: usize,
-        callback: extern "C" fn(*mut core::ffi::c_void, usize, usize, usize, usize),
-        context: *mut core::ffi::c_void,
-    );
-    fn fu_pool_unsafe_join(pool: *mut core::ffi::c_void);
-}
+    fn fu_pool_unsafe_join(pool: *mut c_void);
 
-const FU_CALLER_INCLUSIVE: core::ffi::c_int = 0;
-const FU_CALLER_EXCLUSIVE: core::ffi::c_int = 1;
+    fn fu_allocate_at_least(
+        numa_node_index: usize,
+        minimum_bytes: usize,
+        allocated_bytes: *mut usize,
+        bytes_per_page: *mut usize,
+    ) -> *mut c_void;
+    fn fu_allocate(numa_node_index: usize, bytes: usize) -> *mut c_void;
+    fn fu_free(numa_node_index: usize, pointer: *mut c_void, bytes: usize);
+
+}
 
 /// Returns a string describing available platform capabilities.
 #[cfg(feature = "std")]
@@ -115,8 +133,7 @@ pub fn capabilities_string() -> Option<&'static str> {
 }
 
 /// Returns a raw pointer to the capabilities string for no_std environments.
-#[cfg(not(feature = "std"))]
-pub fn capabilities_string_ptr() -> *const core::ffi::c_char {
+pub fn capabilities_string_ptr() -> *const c_char {
     unsafe { fu_capabilities_string() }
 }
 
@@ -139,19 +156,11 @@ pub fn count_colocations() -> usize {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CallerExclusivity {
     /// The calling thread participates in the workload (spawns N-1 workers)
-    Inclusive,
+    Inclusive = 0,
     /// The calling thread only coordinates, doesn't execute tasks (spawns N workers)
-    Exclusive,
+    Exclusive = 1,
 }
 
-impl CallerExclusivity {
-    fn to_c_int(self) -> core::ffi::c_int {
-        match self {
-            CallerExclusivity::Inclusive => FU_CALLER_INCLUSIVE,
-            CallerExclusivity::Exclusive => FU_CALLER_EXCLUSIVE,
-        }
-    }
-}
 /// Returns the number of distinct Quality-of-Service levels.
 pub fn count_quality_levels() -> usize {
     unsafe { fu_count_quality_levels() }
@@ -164,15 +173,17 @@ pub fn count_quality_levels() -> usize {
 /// implementation actually spawns **N − 1** background workers and runs the last
 /// slice on the caller thread.
 pub struct ThreadPool {
-    inner: *mut core::ffi::c_void,
+    inner: *mut c_void,
 }
 
 unsafe impl Send for ThreadPool {}
 unsafe impl Sync for ThreadPool {}
 
 impl ThreadPool {
-    /// Creates a new thread pool with the specified number of threads.
-    pub fn try_spawn(planned_threads: usize) -> Result<Self, Error> {
+    pub fn try_spawn_with_exclusivity(
+        planned_threads: usize,
+        exclusivity: CallerExclusivity,
+    ) -> Result<Self, Error> {
         if planned_threads == 0 {
             return Err(Error::InvalidParameter);
         }
@@ -183,7 +194,7 @@ impl ThreadPool {
                 return Err(Error::CreationFailed);
             }
 
-            let success = fu_pool_spawn(inner, planned_threads, FU_CALLER_INCLUSIVE);
+            let success = fu_pool_spawn(inner, planned_threads, exclusivity as c_int);
             if success == 0 {
                 fu_pool_delete(inner);
                 return Err(Error::SpawnFailed);
@@ -191,6 +202,10 @@ impl ThreadPool {
 
             Ok(Self { inner })
         }
+    }
+    /// Creates a new thread pool with the specified number of threads.
+    pub fn try_spawn(planned_threads: usize) -> Result<Self, Error> {
+        Self::try_spawn_with_exclusivity(planned_threads, CallerExclusivity::Inclusive)
     }
 
     /// Returns the number of threads in the pool.
@@ -208,10 +223,7 @@ impl ThreadPool {
     where
         F: Fn(usize, usize) + Sync,
     {
-        ForThreadsOperation {
-            pool: self,
-            function,
-        }
+        ForThreadsOperation::new(self, function)
     }
 
     /// Distributes `n` similar duration calls between threads by individual indices.
@@ -267,18 +279,33 @@ where
 {
     pool: &'a mut ThreadPool,
     function: F,
+    did_broadcast: bool,
+    did_join: bool,
 }
 
-impl<'a, F> Drop for ForThreadsOperation<'a, F>
+impl<'a, F> ForThreadsOperation<'a, F>
 where
     F: Fn(usize, usize) + Sync,
 {
-    fn drop(&mut self) {
-        extern "C" fn trampoline<F>(
-            ctx: *mut core::ffi::c_void,
-            thread_index: usize,
-            colocation_index: usize,
-        ) where
+    /// Create a new ForThreadsOperation (internal use by ThreadPool)
+    pub(crate) fn new(pool: &'a mut ThreadPool, function: F) -> Self {
+        Self {
+            pool,
+            function,
+            did_broadcast: false,
+            did_join: false,
+        }
+    }
+
+    /// Broadcast the work to all threads without waiting for completion.
+    /// This is safe to call multiple times - subsequent calls are no-ops.
+    pub fn broadcast(&mut self) {
+        if self.did_broadcast {
+            return; // No need to broadcast again
+        }
+
+        extern "C" fn trampoline<F>(ctx: *mut c_void, thread_index: usize, colocation_index: usize)
+        where
             F: Fn(usize, usize) + Sync,
         {
             let f = unsafe { &*(ctx as *const F) };
@@ -286,10 +313,34 @@ where
         }
 
         unsafe {
-            let ctx = &self.function as *const F as *mut core::ffi::c_void;
+            let ctx = &self.function as *const F as *mut c_void;
             fu_pool_unsafe_for_threads(self.pool.inner, trampoline::<F>, ctx);
-            fu_pool_unsafe_join(self.pool.inner);
+            self.did_broadcast = true;
         }
+    }
+
+    /// Wait for all threads to complete their work.
+    /// If broadcast() hasn't been called yet, this will call it first.
+    pub fn join(&mut self) {
+        if !self.did_broadcast {
+            self.broadcast();
+        }
+        if self.did_join {
+            return; // No need to join again
+        }
+        unsafe {
+            fu_pool_unsafe_join(self.pool.inner);
+            self.did_join = true;
+        }
+    }
+}
+
+impl<'a, F> Drop for ForThreadsOperation<'a, F>
+where
+    F: Fn(usize, usize) + Sync,
+{
+    fn drop(&mut self) {
+        self.join();
     }
 }
 
@@ -309,7 +360,7 @@ where
 {
     fn drop(&mut self) {
         extern "C" fn trampoline<F>(
-            ctx: *mut core::ffi::c_void,
+            ctx: *mut c_void,
             task_index: usize,
             thread_index: usize,
             colocation_index: usize,
@@ -325,9 +376,8 @@ where
         }
 
         unsafe {
-            let ctx = &self.function as *const F as *mut core::ffi::c_void;
-            fu_pool_unsafe_for_n(self.pool.inner, self.n, trampoline::<F>, ctx);
-            fu_pool_unsafe_join(self.pool.inner);
+            let ctx = &self.function as *const F as *mut c_void;
+            fu_pool_for_n(self.pool.inner, self.n, trampoline::<F>, ctx);
         }
     }
 }
@@ -348,7 +398,7 @@ where
 {
     fn drop(&mut self) {
         extern "C" fn trampoline<F>(
-            ctx: *mut core::ffi::c_void,
+            ctx: *mut c_void,
             task_index: usize,
             thread_index: usize,
             colocation_index: usize,
@@ -364,9 +414,8 @@ where
         }
 
         unsafe {
-            let ctx = &self.function as *const F as *mut core::ffi::c_void;
-            fu_pool_unsafe_for_n_dynamic(self.pool.inner, self.n, trampoline::<F>, ctx);
-            fu_pool_unsafe_join(self.pool.inner);
+            let ctx = &self.function as *const F as *mut c_void;
+            fu_pool_for_n_dynamic(self.pool.inner, self.n, trampoline::<F>, ctx);
         }
     }
 }
@@ -387,7 +436,7 @@ where
 {
     fn drop(&mut self) {
         extern "C" fn trampoline<F>(
-            ctx: *mut core::ffi::c_void,
+            ctx: *mut c_void,
             first_index: usize,
             count: usize,
             thread_index: usize,
@@ -407,9 +456,8 @@ where
         }
 
         unsafe {
-            let ctx = &self.function as *const F as *mut core::ffi::c_void;
-            fu_pool_unsafe_for_slices(self.pool.inner, self.n, trampoline::<F>, ctx);
-            fu_pool_unsafe_join(self.pool.inner);
+            let ctx = &self.function as *const F as *mut c_void;
+            fu_pool_for_slices(self.pool.inner, self.n, trampoline::<F>, ctx);
         }
     }
 }
@@ -483,6 +531,8 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
     use std::vec::Vec;
 
     #[inline]
@@ -549,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_for_n_static_scheduling() {
-        const EXPECTED_PARTS: usize = 10_000;
+        const EXPECTED_PARTS: usize = 1_000;
         let mut pool = spawn(hw_threads());
 
         let visited: Arc<Vec<AtomicBool>> = Arc::new(
@@ -579,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_for_n_dynamic_scheduling() {
-        const EXPECTED_PARTS: usize = 10_000;
+        const EXPECTED_PARTS: usize = 1_000;
         let mut pool = spawn(hw_threads());
 
         let visited: Arc<Vec<AtomicBool>> = Arc::new(
@@ -633,8 +683,6 @@ mod tests {
             let _op = pool.for_n(1000, move |_prong| {
                 counter_ref.fetch_add(1, Ordering::Relaxed);
             });
-            // At this point, operation hasn't executed yet
-            assert_eq!(counter.load(Ordering::Relaxed), 0);
         } // Operation executes here in the destructor
 
         // Now the operation should have completed

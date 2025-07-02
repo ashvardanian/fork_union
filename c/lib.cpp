@@ -47,36 +47,16 @@ using pool_variants_t = std::variant< //
 
 struct opaque_pool_t {
     pool_variants_t variants;
-
     fu_lambda_context_t current_context; /// Current context for the unsafe callbacks
-    union {
-        fu_for_threads_t for_threads; /// Callback for `unsafe_for_threads`
-        fu_for_prongs_t for_prongs;   /// Callback for `unsafe_for_n`
-        fu_for_slices_t for_slices;   /// Callback for `unsafe_for_slices
-    } current_callback;
+    fu_for_threads_t current_callback;   /// Current callback for the unsafe callbacks
 
     template <typename pool_type_>
-    opaque_pool_t(std::in_place_type_t<pool_type_> inplace) noexcept : variants(inplace), current_context(nullptr) {
-        current_callback.for_threads = nullptr;
-    }
+    opaque_pool_t(std::in_place_type_t<pool_type_> inplace) noexcept
+        : variants(inplace), current_context(nullptr), current_callback(nullptr) {}
 
     /** @brief A shim to redirect unsafe callbacks to the current context. */
     void operator()(fu::colocated_thread_t pinned) const noexcept {
-        std::printf("> thread %zu, colocation %zu\n", pinned.thread, pinned.colocation);
-        current_callback.for_threads(current_context, pinned.thread, pinned.colocation);
-    }
-
-    /** @brief A shim to redirect unsafe callbacks to the current context. */
-    void operator()(fu::colocated_prong_t prong) const noexcept {
-        std::printf("> prong %zu, thread %zu, colocation %zu\n", prong.task, prong.thread, prong.colocation);
-        current_callback.for_prongs(current_context, prong.task, prong.thread, prong.colocation);
-    }
-
-    /** @brief A shim to redirect unsafe callbacks to the current context. */
-    void operator()(fu::colocated_prong_t prong, std::size_t count) const noexcept {
-        std::printf("> prongs %zu-%zu, thread %zu, colocation %zu\n", prong.task, prong.task + count, prong.thread,
-                    prong.colocation);
-        current_callback.for_slices(current_context, prong.task, count, prong.thread, prong.colocation);
+        current_callback(current_context, pinned.thread, pinned.colocation);
     }
 };
 
@@ -188,7 +168,7 @@ void *fu_allocate_at_least(                       //
     auto result = allocator.allocate_at_least(minimum_bytes);
     if (!result) return nullptr;
     *allocated_bytes = result.count;
-    *bytes_per_page = result.bytes_per_page;
+    *bytes_per_page = result.bytes_per_page();
     return result.ptr;
 #else
     auto result = std::malloc(minimum_bytes);
@@ -199,20 +179,14 @@ void *fu_allocate_at_least(                       //
 #endif
 }
 
-void *fu_allocate(size_t numa_node_index, size_t bytes, size_t *bytes_per_page) {
+void *fu_allocate(size_t numa_node_index, size_t bytes) {
 
 #if FU_ENABLE_NUMA
     auto const &node = global_numa_topology.node(numa_node_index);
     fu::linux_numa_allocator_t allocator(node.node_id);
-    auto result = allocator.allocate(bytes);
-    if (!result) return nullptr;
-    *bytes_per_page = result.bytes_per_page;
-    return result.ptr;
+    return allocator.allocate(bytes);
 #else
-    auto result = std::malloc(bytes);
-    if (!result) return nullptr;
-    *bytes_per_page = fu::get_ram_page_size();
-    return result;
+    return std::malloc(bytes);
 #endif
 }
 
@@ -300,7 +274,7 @@ fu_pool_t *fu_pool_new(void) {
 }
 
 void fu_pool_delete(fu_pool_t *pool) {
-    if (!pool) return;
+    assert(pool != nullptr);
 
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit([](auto &variant) { variant.terminate(); }, opaque->variants);
@@ -311,32 +285,39 @@ void fu_pool_delete(fu_pool_t *pool) {
 }
 
 fu_bool_t fu_pool_spawn(fu_pool_t *pool, size_t threads, fu_caller_exclusivity_t c_exclusivity) {
+    assert(pool != nullptr);
+    assert(c_exclusivity == fu_caller_inclusive_k || c_exclusivity == fu_caller_exclusive_k);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     auto exclusivity = c_exclusivity == fu_caller_inclusive_k ? fu::caller_inclusive_k : fu::caller_exclusive_k;
     return std::visit([=](auto &variant) { return variant.try_spawn(threads, exclusivity); }, opaque->variants);
 }
 
 void fu_pool_sleep(fu_pool_t *pool, size_t micros) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit([=](auto &variant) { variant.sleep(micros); }, opaque->variants);
 }
 
 void fu_pool_terminate(fu_pool_t *pool) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit([](auto &variant) { variant.terminate(); }, opaque->variants);
 }
 
 size_t fu_pool_count_colocations(fu_pool_t *pool) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     return std::visit([](auto &variant) { return variant.colocations_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads(fu_pool_t *pool) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     return std::visit([](auto &variant) { return variant.threads_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads_in_colocation(fu_pool_t *pool, size_t colocation_index) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     return std::visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);
 }
@@ -346,6 +327,7 @@ size_t fu_pool_count_threads_in_colocation(fu_pool_t *pool, size_t colocation_in
 #pragma region - Primary API
 
 void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context) {
+    assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit(
         [&](auto &variant) {
@@ -357,6 +339,7 @@ void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_c
 }
 
 void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
+    assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit(
         [&](auto &variant) {
@@ -368,6 +351,7 @@ void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambd
 }
 
 void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
+    assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit(
         [&](auto &variant) {
@@ -379,6 +363,7 @@ void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, 
 }
 
 void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context) {
+    assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     std::visit(
         [&](auto &variant) {
@@ -394,38 +379,20 @@ void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_
 #pragma region - Flexible API
 
 void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context) {
+    assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     opaque->current_context = context;
-    opaque->current_callback.for_threads = callback;
+    opaque->current_callback = callback;
     std::visit([&](auto &variant) { variant.unsafe_for_threads(*opaque); }, opaque->variants);
 }
 
-void fu_pool_unsafe_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    opaque->current_context = context;
-    opaque->current_callback.for_prongs = callback;
-    std::visit([&](auto &variant) { variant.unsafe_for_n(n, *opaque); }, opaque->variants);
-}
-
-void fu_pool_unsafe_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    opaque->current_context = context;
-    opaque->current_callback.for_prongs = callback;
-    std::visit([&](auto &variant) { variant.unsafe_for_n_dynamic(n, *opaque); }, opaque->variants);
-}
-
-void fu_pool_unsafe_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context) {
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    opaque->current_context = context;
-    opaque->current_callback.for_slices = callback;
-    std::visit([&](auto &variant) { variant.unsafe_for_slices(n, *opaque); }, opaque->variants);
-}
-
 void fu_pool_unsafe_join(fu_pool_t *pool) {
+    assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    assert(opaque->current_context != nullptr);
     std::visit([](auto &variant) { variant.unsafe_join(); }, opaque->variants);
     opaque->current_context = nullptr;
-    opaque->current_callback.for_threads = nullptr;
+    opaque->current_callback = nullptr;
 }
 
 #pragma endregion - Flexible API

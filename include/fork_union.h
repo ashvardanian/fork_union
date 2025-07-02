@@ -302,7 +302,6 @@ void fu_free(size_t numa_node_index, void *pointer, size_t bytes);
  *  @brief Allocates exactly the requested amount of memory on a specific NUMA node.
  *  @param[in] numa_node_index The index of the NUMA node to allocate memory on.
  *  @param[in] bytes Number of bytes to allocate, must be > 0.
- *  @param[out] bytes_per_page Pointer to store the size of the RAM pages used for allocation, must not be NULL.
  *  @retval Pointer to allocated memory, or NULL if allocation failed.
  *  @note This API is @b thread-safe and can be called from any thread.
  *
@@ -310,7 +309,7 @@ void fu_free(size_t numa_node_index, void *pointer, size_t bytes);
  *  Unlike `fu_allocate_at_least`, this function doesn't over-allocate for page optimization.
  *  Use this for compatibility with standard allocator interfaces.
  */
-void *fu_allocate(size_t numa_node_index, size_t bytes, size_t *bytes_per_page);
+void *fu_allocate(size_t numa_node_index, size_t bytes);
 
 #pragma endregion - Memory
 
@@ -617,7 +616,7 @@ void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_
 
 #pragma endregion - Primary API
 
-#pragma region - Flexible API
+#pragma region - Unsafe API
 
 /**
  *  @brief Executes a callback in parallel on all threads without blocking.
@@ -629,6 +628,9 @@ void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_
  *  This is the non-blocking variant of `fu_pool_for_threads`. The function
  *  initiates parallel execution but returns immediately, allowing the calling
  *  thread to perform other work while tasks execute in the background.
+ *
+ *  It can be used to implement higher-level concurrency patterns in other
+ *  programming languages.
  *
  *  Critical requirements:
  *  - Must call `fu_pool_unsafe_join()` before pool destruction or next operation
