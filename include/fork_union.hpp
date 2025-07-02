@@ -2595,7 +2595,7 @@ struct linux_colocated_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();

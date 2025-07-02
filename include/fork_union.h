@@ -32,7 +32,7 @@
  *      if (!caps) return EXIT_FAILURE; // ! Thread pool is not supported
  *      printf("Fork Union capabilities: %s\n", caps);
  *
- *      fu_pool_t *pool = fu_pool_new();
+ *      fu_pool_t *pool = fu_pool_new("fork_union_demo");
  *      if (!pool) return EXIT_FAILURE; // ! Failed to create a thread pool
  *
  *      size_t threads = fu_count_logical_cores();
@@ -317,6 +317,7 @@ void *fu_allocate(size_t numa_node_index, size_t bytes);
 
 /**
  *  @brief Creates a new thread pool instance.
+ *  @param[in] name Optional name for the thread pool, may be NULL.
  *  @retval Non-NULL pointer to an opaque thread pool handle on success.
  *  @retval NULL if creation failed due to insufficient memory or platform limitations.
  *  @note This API is @b thread-safe and can be called from any thread.
@@ -325,7 +326,7 @@ void *fu_allocate(size_t numa_node_index, size_t bytes);
  *  with `fu_pool_spawn` before use. Multiple pools can coexist.
  *  @sa `fu_pool_delete` for cleanup, `fu_pool_spawn` for initialization.
  */
-fu_pool_t *fu_pool_new(void);
+fu_pool_t *fu_pool_new(char const *name);
 
 /**
  *  @brief Destroys a thread pool and releases all associated resources.

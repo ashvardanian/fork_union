@@ -50,9 +50,9 @@ struct opaque_pool_t {
     fu_lambda_context_t current_context; /// Current context for the unsafe callbacks
     fu_for_threads_t current_callback;   /// Current callback for the unsafe callbacks
 
-    template <typename pool_type_>
-    opaque_pool_t(std::in_place_type_t<pool_type_> inplace) noexcept
-        : variants(inplace), current_context(nullptr), current_callback(nullptr) {}
+    template <typename pool_type_, typename... args_types_>
+    opaque_pool_t(std::in_place_type_t<pool_type_> inplace, args_types_ &&...args) noexcept
+        : variants(inplace, std::forward<args_types_>(args)...), current_context(nullptr), current_callback(nullptr) {}
 
     /** @brief A shim to redirect unsafe callbacks to the current context. */
     void operator()(fu::colocated_thread_t pinned) const noexcept {
@@ -204,7 +204,7 @@ void fu_free(size_t numa_node_index, void *pointer, size_t bytes) {
 
 #pragma region - Lifetime
 
-fu_pool_t *fu_pool_new(void) {
+fu_pool_t *fu_pool_new(char const *name) {
     if (!globals_initialize()) return nullptr;
 
     opaque_pool_t *opaque = static_cast<opaque_pool_t *>(std::malloc(sizeof(opaque_pool_t)));
@@ -212,29 +212,40 @@ fu_pool_t *fu_pool_new(void) {
 
     // Best case, use the NUMA-aware distributed pool
 #if FU_ENABLE_NUMA
+    fu::numa_topology_t copied_topology;
+    if (!copied_topology.try_assign(global_numa_topology)) {
+        std::free(opaque);
+        return nullptr;
+    }
+
 #if _FU_DETECT_ARCH_X86_64
     if (global_capabilities & fu::capability_x86_tpause_k) {
-        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_tpause_t>>);
+        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_tpause_t>>, name,
+                                   std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
     if (global_capabilities & fu::capability_x86_pause_k) {
-        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_pause_t>>);
+        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_pause_t>>, name,
+                                   std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
 #if _FU_DETECT_ARCH_ARM64
     if (global_capabilities & fu::capability_arm64_wfet_k) {
-        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::arm64_wfet_t>>);
+        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::arm64_wfet_t>>, name,
+                                   std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
     if (global_capabilities & fu::capability_arm64_yield_k) {
-        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::arm64_yield_t>>);
+        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::arm64_yield_t>>, name,
+                                   std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
 #if _FU_DETECT_ARCH_RISC5
     if (global_capabilities & fu::capability_risc5_pause_k) {
-        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::risc5_pause_t>>);
+        new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::risc5_pause_t>>, name,
+                                   std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif

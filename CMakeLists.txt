@@ -25,7 +25,7 @@ add_library(fork_union_static STATIC c/lib.cpp)
 # Require C++17 for the implementation libraries only
 set_target_properties(
     fork_union_dynamic fork_union_static
-    PROPERTIES CXX_STANDARD 17
+    PROPERTIES CXX_STANDARD 20
                CXX_STANDARD_REQUIRED ON
                CXX_EXTENSIONS OFF
 )
