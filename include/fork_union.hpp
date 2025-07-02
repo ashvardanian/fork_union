@@ -73,9 +73,9 @@
 #include <new>     // `std::hardware_destructive_interference_size`
 #include <array>   // `std::array`
 
-#define FORK_UNION_VERSION_MAJOR 1
+#define FORK_UNION_VERSION_MAJOR 2
 #define FORK_UNION_VERSION_MINOR 0
-#define FORK_UNION_VERSION_PATCH 4
+#define FORK_UNION_VERSION_PATCH 0
 
 #if !defined(FU_ALLOW_UNSAFE)
 #define FU_ALLOW_UNSAFE 0
