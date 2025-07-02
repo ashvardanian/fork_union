@@ -432,7 +432,7 @@ void fu_pool_terminate(fu_pool_t *pool);
  *  - Understanding the system's memory topology
  *  - Optimizing memory allocation strategies
  *  - Load balancing across heterogeneous cores
- *  @sa `fu_pool_count_threads_in_colocation` for per-colocation thread counts.
+ *  @sa `fu_pool_count_threads_in` for per-colocation thread counts.
  */
 size_t fu_pool_count_colocations(fu_pool_t *pool);
 
@@ -464,7 +464,7 @@ size_t fu_pool_count_threads(fu_pool_t *pool);
  *  - User-specified thread distribution
  *  @sa `fu_pool_count_colocations` for valid colocation indices.
  */
-size_t fu_pool_count_threads_in_colocation(fu_pool_t *pool, size_t colocation_index);
+size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index);
 
 #pragma endregion - Lifetime
 

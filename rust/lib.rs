@@ -21,11 +21,22 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use core::slice;
 
-/// Describes a portion of work executed on a specific thread.
+/// A "prong" - the tip of a "fork" - pinning a "task" to a "thread" and "memory" location.
+///
+/// A `Prong` represents a single unit of work that connects:
+/// - A **task** (what work to do) - identified by `task_index`  
+/// - A **thread** (which CPU thread is executing it) - identified by `thread_index`
+/// - A **colocation** (which NUMA node/QoS level it's running on) - identified by `colocation_index`
+///
+/// This metadata is essential for NUMA-aware algorithms, debugging parallel execution,
+/// and understanding load distribution across the thread pool.
 #[derive(Copy, Clone, Debug)]
 pub struct Prong {
+    /// The logical index of the task being processed (0-based)
     pub task_index: usize,
+    /// The physical thread executing this task (0-based)  
     pub thread_index: usize,
+    /// The colocation group this thread belongs to (NUMA node + QoS level)
     pub colocation_index: usize,
 }
 
@@ -61,6 +72,10 @@ impl std::error::Error for Error {}
 extern "C" {
 
     // Library metadata
+    fn fu_version_major() -> usize;
+    fn fu_version_minor() -> usize;
+    fn fu_version_patch() -> usize;
+    fn fu_enabled_numa() -> c_int;
     fn fu_capabilities_string() -> *const c_char;
 
     // Systems metadata
@@ -76,6 +91,8 @@ extern "C" {
     fn fu_pool_terminate(pool: *mut c_void);
     fn fu_pool_count_threads(pool: *mut c_void) -> usize;
     fn fu_pool_count_colocations(pool: *mut c_void) -> usize;
+    fn fu_pool_count_threads_in(pool: *mut c_void, colocation_index: usize) -> usize;
+
     #[allow(dead_code)]
     fn fu_pool_for_threads(
         pool: *mut c_void,
@@ -107,6 +124,7 @@ extern "C" {
         context: *mut c_void,
     );
     fn fu_pool_unsafe_join(pool: *mut c_void);
+    fn fu_pool_sleep(pool: *mut c_void, micros: usize);
 
     fn fu_allocate_at_least(
         numa_node_index: usize,
@@ -116,6 +134,7 @@ extern "C" {
     ) -> *mut c_void;
     fn fu_allocate(numa_node_index: usize, bytes: usize) -> *mut c_void;
     fn fu_free(numa_node_index: usize, pointer: *mut c_void, bytes: usize);
+    fn fu_volume_huge_pages(numa_node_index: usize) -> usize;
 
 }
 
@@ -148,6 +167,17 @@ pub fn count_numa_nodes() -> usize {
 }
 
 /// Returns the number of distinct thread colocations available.
+///
+/// A "colocation" represents a group of threads that share the same:
+/// - **NUMA memory domain** - threads with fast local memory access
+/// - **Quality-of-Service level** - P-cores vs E-cores on heterogeneous CPUs  
+/// - **Cache hierarchy** - threads sharing L3 cache
+///
+/// # Typical Values
+///
+/// - `1` on most desktop, laptop, or IoT platforms with unified memory
+/// - `2-8` on typical dual-socket servers or heterogeneous mobile chips
+/// - `4-32` on high-end cloud servers with multiple sockets
 pub fn count_colocations() -> usize {
     unsafe { fu_count_colocations() }
 }
@@ -164,6 +194,31 @@ pub enum CallerExclusivity {
 /// Returns the number of distinct Quality-of-Service levels.
 pub fn count_quality_levels() -> usize {
     unsafe { fu_count_quality_levels() }
+}
+
+/// Returns true if NUMA support was compiled into the library.
+pub fn numa_enabled() -> bool {
+    unsafe { fu_enabled_numa() != 0 }
+}
+
+/// Returns the major version number of the Fork Union library.
+pub fn version_major() -> usize {
+    unsafe { fu_version_major() }
+}
+
+/// Returns the minor version number of the Fork Union library.
+pub fn version_minor() -> usize {
+    unsafe { fu_version_minor() }
+}
+
+/// Returns the patch version number of the Fork Union library.
+pub fn version_patch() -> usize {
+    unsafe { fu_version_patch() }
+}
+
+/// Returns the library version as a tuple of (major, minor, patch).
+pub fn version() -> (usize, usize, usize) {
+    (version_major(), version_minor(), version_patch())
 }
 
 /// Minimalistic, fixed‑size thread‑pool for blocking scoped parallelism.
@@ -196,8 +251,8 @@ pub fn count_quality_levels() -> usize {
 /// let mut pool = spawn(4);
 ///
 /// // Execute work on each thread
-/// pool.for_threads(|thread_idx, colocation_idx| {
-///     println!("Thread {} on colocation {}", thread_idx, colocation_idx);
+/// pool.for_threads(|thread_index, colocation_index| {
+///     println!("Thread {} on colocation {}", thread_index, colocation_index);
 /// });
 ///
 /// // Distribute 1000 tasks across threads
@@ -286,8 +341,80 @@ impl ThreadPool {
     }
 
     /// Returns the number of thread colocations in the pool.
+    ///
+    /// Colocations group threads by NUMA domain, QoS level, and cache hierarchy.
+    /// This information is useful for NUMA-aware load balancing and memory allocation.
     pub fn colocations(&self) -> usize {
         unsafe { fu_pool_count_colocations(self.inner) }
+    }
+
+    /// Returns the number of threads in a specific colocation.
+    ///
+    /// This method is useful for NUMA-aware load balancing, allowing you to understand
+    /// how many threads are available in each colocation group.
+    ///
+    /// # Arguments
+    ///
+    /// * `colocation_index` - The colocation to query (0-based)
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let pool = spawn(8);
+    /// let total_colocations = pool.colocations();
+    ///
+    /// for colocation_index in 0..total_colocations {
+    ///     let thread_count = pool.count_threads_in(colocation_index);
+    ///     println!("Colocation {} has {} threads", colocation_index, thread_count);
+    /// }
+    /// ```
+    pub fn count_threads_in(&self, colocation_index: usize) -> usize {
+        unsafe { fu_pool_count_threads_in(self.inner, colocation_index) }
+    }
+
+    /// Transitions worker threads to a power-saving sleep state.
+    ///
+    /// This function places worker threads into a low-power sleep state when no work
+    /// is available for extended periods. Threads will periodically check for new work
+    /// at the specified interval.
+    ///
+    /// # Arguments
+    ///
+    /// * `micros` - Wake-up check interval in microseconds, must be > 0
+    ///
+    /// # Safety
+    ///
+    /// This function is **not thread-safe** and should only be called between task batches
+    /// when no parallel operations are in progress.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut pool = spawn(4);
+    ///
+    /// // Process a batch of work
+    /// pool.for_n(1000, |prong| {
+    ///     // Do some work...
+    ///     std::hint::black_box(prong.task_index * 2);
+    /// });
+    ///
+    /// // Put threads to sleep between batches to save power
+    /// // Check for new work every 10 milliseconds
+    /// pool.sleep(10_000); // 10,000 microseconds = 10ms
+    ///
+    /// // Process another batch
+    /// pool.for_n(500, |prong| {
+    ///     std::hint::black_box(prong.task_index * 3);
+    /// });
+    /// ```
+    pub fn sleep(&mut self, micros: usize) {
+        unsafe {
+            fu_pool_sleep(self.inner, micros);
+        }
     }
 
     /// Executes a function on each thread of the pool, returning a closure object.
@@ -307,11 +434,11 @@ impl ThreadPool {
     /// let mut pool = spawn(4);
     ///
     /// {
-    ///     let _op = pool.for_threads(|thread_idx, colocation_idx| {
-    ///         println!("Thread {} on colocation {}", thread_idx, colocation_idx);
+    ///     let _op = pool.for_threads(|thread_index, colocation_index| {
+    ///         println!("Thread {} on colocation {}", thread_index, colocation_index);
     ///         // Simulate some work
     ///         for i in 0..1000 {
-    ///             std::hint::black_box(i * thread_idx);
+    ///             std::hint::black_box(i * thread_index);
     ///         }
     ///     });
     ///     // Work executes when _op is dropped
@@ -414,17 +541,17 @@ impl ThreadPool {
     /// let mut pool = spawn(4);
     ///
     /// pool.for_slices(1000, |prong, count| {
-    ///     let start_idx = prong.task_index;
+    ///     let start_index = prong.task_index;
     ///     
     ///     // Process the slice - each thread gets a contiguous range
     ///     for i in 0..count {
-    ///         let global_idx = start_idx + i;
-    ///         let result = global_idx * global_idx;
+    ///         let global_index = start_index + i;
+    ///         let result = global_index * global_index;
     ///         std::hint::black_box(result);
     ///     }
     ///     
     ///     println!("Thread {} processed slice [{}, {})",
-    ///              prong.thread_index, start_idx, start_idx + count);
+    ///              prong.thread_index, start_index, start_index + count);
     /// });
     /// ```
     pub fn for_slices<F>(&mut self, n: usize, function: F) -> ForSlicesOperation<F>
@@ -594,6 +721,35 @@ impl PinnedAllocator {
     /// Returns the NUMA node this allocator is pinned to.
     pub fn numa_node(&self) -> usize {
         self.numa_node
+    }
+
+    /// Returns the volume of huge pages available on this allocator's NUMA node.
+    ///
+    /// This method queries the operating system for the amount of huge page memory
+    /// available for allocation on this NUMA node, which is useful for planning
+    /// large memory allocations.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes of huge page memory available, or 0 if huge pages
+    /// are not available on this NUMA node.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).unwrap();
+    /// let huge_page_volume = allocator.volume_huge_pages();
+    ///
+    /// if huge_page_volume > 0 {
+    ///     println!("NUMA node 0 has {} bytes of huge pages available", huge_page_volume);
+    /// } else {
+    ///     println!("No huge pages available on NUMA node 0");
+    /// }
+    /// ```
+    pub fn volume_huge_pages(&self) -> usize {
+        unsafe { fu_volume_huge_pages(self.numa_node) }
     }
 
     /// Allocates memory with at least the requested size on this allocator's NUMA node.

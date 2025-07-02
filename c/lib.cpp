@@ -316,7 +316,7 @@ size_t fu_pool_count_threads(fu_pool_t *pool) {
     return std::visit([](auto &variant) { return variant.threads_count(); }, opaque->variants);
 }
 
-size_t fu_pool_count_threads_in_colocation(fu_pool_t *pool, size_t colocation_index) {
+size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     return std::visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);

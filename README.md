@@ -47,9 +47,9 @@ A minimal example may look like this:
 
 ```rs
 use fork_union as fu;
-let pool = fu::spawn(2);
-pool.for_threads(|thread_index| {
-    println!("Hello from thread # {}", thread_index + 1);
+let mut pool = fu::spawn(2);
+pool.for_threads(|thread_index, colocation_index| {
+    println!("Hello from thread # {} on colocation # {}", thread_index + 1, colocation_index + 1);
 });
 ```
 
