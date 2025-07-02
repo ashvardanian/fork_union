@@ -85,7 +85,7 @@ extern "C" {
     fn fu_count_quality_levels() -> usize;
 
     // Core thread pool operations
-    fn fu_pool_new() -> *mut c_void;
+    fn fu_pool_new(name: *const c_char) -> *mut c_void;
     fn fu_pool_delete(pool: *mut c_void);
     fn fu_pool_spawn(pool: *mut c_void, threads: usize, exclusivity: c_int) -> c_int;
     fn fu_pool_terminate(pool: *mut c_void);
@@ -293,12 +293,31 @@ impl ThreadPool {
         threads: usize,
         exclusivity: CallerExclusivity,
     ) -> Result<Self, Error> {
+        Self::try_named_spawn_with_exclusivity(None, threads, exclusivity)
+    }
+
+    pub fn try_named_spawn_with_exclusivity(
+        name: Option<&str>,
+        threads: usize,
+        exclusivity: CallerExclusivity,
+    ) -> Result<Self, Error> {
         if threads == 0 {
             return Err(Error::InvalidParameter);
         }
 
         unsafe {
-            let inner = fu_pool_new();
+            let name_ptr = if let Some(name_str) = name {
+                let mut name_buffer = [0u8; 16];
+                let name_bytes = name_str.as_bytes();
+                let copy_len = core::cmp::min(name_bytes.len(), 15); // Leave space for null terminator
+                name_buffer[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+                // name_buffer[copy_len] is already 0 from initialization
+                name_buffer.as_ptr() as *const c_char
+            } else {
+                core::ptr::null()
+            };
+
+            let inner = fu_pool_new(name_ptr);
             if inner.is_null() {
                 return Err(Error::CreationFailed);
             }
@@ -333,6 +352,29 @@ impl ThreadPool {
     /// ```
     pub fn try_spawn(threads: usize) -> Result<Self, Error> {
         Self::try_spawn_with_exclusivity(threads, CallerExclusivity::Inclusive)
+    }
+
+    /// Creates a new named thread pool with the specified number of threads.
+    ///
+    /// The thread pool name can be useful for debugging, profiling, and system monitoring.
+    /// On supported platforms, the name may be visible in system tools and thread listings.
+    /// Names are truncated to 15 characters (plus null terminator) to fit platform limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Name for the thread pool (up to 15 characters)
+    /// * `threads` - Total number of threads including the caller thread
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let pool = ThreadPool::try_named_spawn("worker_pool", 4).expect("Failed to create thread pool");
+    /// assert_eq!(pool.threads(), 4);
+    /// ```
+    pub fn try_named_spawn(name: &str, threads: usize) -> Result<Self, Error> {
+        Self::try_named_spawn_with_exclusivity(Some(name), threads, CallerExclusivity::Inclusive)
     }
 
     /// Returns the number of threads in the pool.
@@ -1153,6 +1195,11 @@ where
 /// Spawns a pool with the specified number of threads.
 pub fn spawn(threads: usize) -> ThreadPool {
     ThreadPool::try_spawn(threads).expect("Failed to spawn ThreadPool")
+}
+
+/// Spawns a named pool with the specified number of threads.
+pub fn named_spawn(name: &str, threads: usize) -> ThreadPool {
+    ThreadPool::try_named_spawn(name, threads).expect("Failed to spawn named ThreadPool")
 }
 
 /// Standalone function to distribute `n` similar duration calls between threads.

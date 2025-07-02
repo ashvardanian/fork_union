@@ -74,21 +74,16 @@ A safer `try_spawn_in` interface is recommended using the Allocator API.
 A more realistic example may look like this:
 
 ```rs
-#![feature(allocator_api)]
-use std::thread;
 use std::error::Error;
-use std::alloc::Global;
 use fork_union as fu;
 
 fn heavy_math(_: usize) {}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let pool = fu::ThreadPool::try_spawn(4)?;
-    let pool = fu::ThreadPool::try_spawn_in(4, Global)?;
-    let pool = fu::ThreadPool::try_named_spawn("heavy-math", 4)?;
-    let pool = fu::ThreadPool::try_named_spawn_in("heavy-math", 4, Global)?;
+    let mut pool = fu::ThreadPool::try_spawn(4)?;
+    let mut pool = fu::ThreadPool::try_named_spawn("heavy-math", 4)?;
     pool.for_n_dynamic(400, |prong| {
-        heavy_math(prong.1);
+        heavy_math(prong.task_index);
     });
     Ok(())
 }
