@@ -115,40 +115,56 @@ fn hw_threads() -> usize {
 // ────────────────────────────────────────────────────────────────────────────
 fn iteration_fu_static(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
     let n = bodies.len();
-    let bodies_ptr = fu::SyncConstPtr::new(bodies.as_ptr());
 
-    fu::for_each_prong_mut(pool, forces, move |force, prong| unsafe {
-        let bi = bodies_ptr.get(prong.task_index);
-        let mut acc = Vector3::default();
+    // First pass: calculate forces (need read access to bodies)
+    {
+        let bodies_ref = &*bodies; // Convert &mut [Body] to &[Body]
+        fu::for_each_prong_mut(pool, forces, move |force, prong| {
+            let bi = &bodies_ref[prong.task_index];
+            let mut acc = Vector3::default();
 
-        for j in 0..n {
-            let bj = bodies_ptr.get(j);
-            acc += gravitational_force(bi, bj);
-        }
-        *force = acc;
-    });
-    fu::for_each_prong_mut(pool, bodies, move |body, prong| {
-        apply_force(body, &forces[prong.task_index]);
-    });
+            for j in 0..n {
+                let bj = &bodies_ref[j];
+                acc += gravitational_force(bi, bj);
+            }
+            *force = acc;
+        });
+    } // bodies_ref goes out of scope here
+
+    // Second pass: apply forces (need read access to forces)
+    {
+        let forces_ref = &*forces; // Convert &mut [Vector3] to &[Vector3]
+        fu::for_each_prong_mut(pool, bodies, move |body, prong| {
+            apply_force(body, &forces_ref[prong.task_index]);
+        });
+    }
 }
 
 fn iteration_fu_dynamic(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
     let n = bodies.len();
-    let bodies_ptr = fu::SyncConstPtr::new(bodies.as_ptr());
 
-    fu::for_each_prong_mut_dynamic(pool, forces, move |force, prong| unsafe {
-        let bi = bodies_ptr.get(prong.task_index);
-        let mut acc = Vector3::default();
+    // First pass: calculate forces (need read access to bodies)
+    {
+        let bodies_ref = &*bodies; // Convert &mut [Body] to &[Body]
+        fu::for_each_prong_mut_dynamic(pool, forces, move |force, prong| {
+            let bi = &bodies_ref[prong.task_index];
+            let mut acc = Vector3::default();
 
-        for j in 0..n {
-            let bj = bodies_ptr.get(j);
-            acc += gravitational_force(bi, bj);
-        }
-        *force = acc;
-    });
-    fu::for_each_prong_mut_dynamic(pool, bodies, move |body, prong| {
-        apply_force(body, &forces[prong.task_index]);
-    });
+            for j in 0..n {
+                let bj = &bodies_ref[j];
+                acc += gravitational_force(bi, bj);
+            }
+            *force = acc;
+        });
+    } // bodies_ref goes out of scope here
+
+    // Second pass: apply forces (need read access to forces)
+    {
+        let forces_ref = &*forces; // Convert &mut [Vector3] to &[Vector3]
+        fu::for_each_prong_mut_dynamic(pool, bodies, move |body, prong| {
+            apply_force(body, &forces_ref[prong.task_index]);
+        });
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

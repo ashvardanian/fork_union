@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug with GDB",
+            "name": "Debug C++ with GDB",
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "Build: Debug with GDB",
@@ -17,6 +17,9 @@
                     "description": "Enable pretty-printing for gdb",
                     "text": "-enable-pretty-printing",
                     "ignoreFailures": true
+                },
+                {
+                    "text": "break pending on"
                 },
                 {
                     "text": "break abort"
@@ -42,7 +45,7 @@
             }
         },
         {
-            "name": "Debug with LLDB",
+            "name": "Debug C++ with LLDB",
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "Build: Debug with LLDB",
@@ -114,6 +117,24 @@
             "osx": {
                 "MIMode": "lldb"
             },
+        },
+        {
+            "name": "Debug Rust",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            },
+            "program": "${cargo:program}",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "sourceLanguages": [
+                "rust"
+            ],
+            "lldb.adapter": "/absolute/path/to/codelldb/adapter/codelldb"
         }
     ]
 }

@@ -12,14 +12,29 @@ set(PROJECT_CXX_STANDARD 11)
 set(PROJECT_CXX_EXTENSIONS OFF)
 set(PROJECT_CXX_STANDARD_REQUIRED ON)
 
-# header-only interface library
+# Header-only interface library
 add_library(fork_union INTERFACE)
-
 target_include_directories(
     fork_union INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
 )
 
-# Enable tests if requested
+# Pre-compiled libraries built from `c/lib.cpp`
+add_library(fork_union_dynamic SHARED c/lib.cpp)
+add_library(fork_union_static STATIC c/lib.cpp)
+
+# Require C++17 for the implementation libraries only
+set_target_properties(
+    fork_union_dynamic fork_union_static
+    PROPERTIES CXX_STANDARD 20
+               CXX_STANDARD_REQUIRED ON
+               CXX_EXTENSIONS OFF
+)
+
+# Re-use the public interface of the header-only target
+target_link_libraries(fork_union_dynamic PUBLIC fork_union)
+target_link_libraries(fork_union_static PUBLIC fork_union)
+
+# Tests & benchmarking scripts
 include(CTest)
 if (BUILD_TESTING)
     enable_testing()
@@ -35,6 +50,13 @@ install(
     EXPORT fork_unionTargets
     INCLUDES
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(
+    TARGETS fork_union_dynamic fork_union_static
+    EXPORT fork_unionTargets # same export set
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} # .so / .dylib
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} # .a
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} # .dll on Windows
 )
 
 # Export config files for find_package
@@ -60,3 +82,31 @@ install(
     NAMESPACE fork_union::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fork_union
 )
+
+# On Linux, let's check if `libnuma` and `pthreads` are available.
+if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
+
+    # Find POSIX threads library
+    find_package(Threads)
+
+    # Find libNUMA
+    find_library(NUMA_LIBRARY NAMES numa)
+    set(NUMA_FOUND FALSE)
+    if (NUMA_LIBRARY)
+        set(NUMA_FOUND TRUE)
+        message(STATUS "libNUMA found: ${NUMA_LIBRARY}")
+    else ()
+        message(STATUS "libNUMA not found – building without NUMA support")
+    endif ()
+
+    # Link to PThreads, libNUMA
+    if (Threads_FOUND AND NUMA_FOUND)
+        target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY} Threads::Threads)
+        target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
+    else ()
+        target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
+    endif ()
+
+else () # Non-Linux platforms
+    target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
+endif ()
