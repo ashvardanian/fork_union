@@ -396,6 +396,7 @@ extern "C" {
     fn fu_allocate(numa_node_index: usize, bytes: usize) -> *mut c_void;
     fn fu_free(numa_node_index: usize, pointer: *mut c_void, bytes: usize);
     fn fu_volume_huge_pages(numa_node_index: usize) -> usize;
+    fn fu_volume_any_pages(numa_node_index: usize) -> usize;
 
 }
 
@@ -415,6 +416,11 @@ pub fn capabilities_string() -> Option<&'static str> {
 /// Returns a raw pointer to the capabilities string for no_std environments.
 pub fn capabilities_string_ptr() -> *const c_char {
     unsafe { fu_capabilities_string() }
+}
+
+/// Returns the volume of any pages (huge or regular) available on the specified NUMA node.
+pub fn volume_any_pages(numa_node_index: usize) -> usize {
+    unsafe { fu_volume_any_pages(numa_node_index) }
 }
 
 /// Returns the number of logical CPU cores available on the system.
@@ -1053,6 +1059,11 @@ impl PinnedAllocator {
     /// ```
     pub fn volume_huge_pages(&self) -> usize {
         unsafe { fu_volume_huge_pages(self.numa_node) }
+    }
+
+    /// Returns the volume of any pages (huge or regular) available on this allocator's NUMA node.
+    pub fn volume_any_pages(&self) -> usize {
+        unsafe { fu_volume_any_pages(self.numa_node) }
     }
 
     /// Allocates memory with at least the requested size on this allocator's NUMA node.

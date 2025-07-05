@@ -154,6 +154,18 @@ size_t fu_volume_huge_pages(size_t numa_node_index) {
 #endif
 }
 
+size_t fu_volume_any_pages(size_t numa_node_index) {
+#if FU_ENABLE_NUMA
+    if (!globals_initialize()) return 0;
+    if (numa_node_index >= global_numa_topology.nodes_count()) return 0;
+
+    auto const &node = global_numa_topology.node(numa_node_index);
+    return node.total_memory_bytes();
+#else
+    return fu::get_ram_total_volume();
+#endif
+}
+
 #pragma endregion - Metadata
 
 #pragma region - Memory

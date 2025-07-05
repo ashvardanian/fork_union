@@ -246,6 +246,20 @@ size_t fu_count_quality_levels(void);
  */
 size_t fu_volume_huge_pages(size_t numa_node_index);
 
+/**
+ *  @brief Returns the volume of any pages (huge or regular) available on the specified NUMA node.
+ *  @param[in] numa_node_index The index of the NUMA node to query, in [0, numa_nodes_count).
+ *  @retval 0 if the NUMA node index is invalid or if no memory is available.
+ *  @retval Number of bytes of memory pages available on the specified NUMA node.
+ *  @note This API is @b not synchronized and should be called once during initialization.
+ *
+ *  This function queries the operating system for the total amount of memory pages
+ *  (both huge pages and regular pages) available for allocation on the specified NUMA node.
+ *  This is useful for determining how much memory can be allocated for vector storage
+ *  based on a percentage of available memory.
+ */
+size_t fu_volume_any_pages(size_t numa_node_index);
+
 #pragma endregion - Metadata
 
 #pragma region - Memory

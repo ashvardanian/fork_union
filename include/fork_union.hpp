@@ -97,10 +97,21 @@
 #include <numa.h>       // `numa_available`, `numa_node_of_cpu`, `numa_alloc_onnode`
 #include <numaif.h>     // `mbind` manual assignment of `mmap` pages
 #include <pthread.h>    // `pthread_getaffinity_np`
-#include <unistd.h>     // `gettid`
 #include <sys/mman.h>   // `mmap`, `MAP_PRIVATE`, `MAP_ANONYMOUS`
 #include <linux/mman.h> // `MAP_HUGE_2MB`, `MAP_HUGE_1GB`
 #include <dirent.h>     // `opendir`, `readdir`, `closedir`
+#endif
+
+#if defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
+#include <unistd.h> // `gettid`, `sysconf`
+#endif
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h> // `sysctl`
+#endif
+
+#if defined(_WIN32)
+#include <windows.h> // `GlobalMemoryStatusEx`
 #endif
 
 /**
@@ -1625,10 +1636,58 @@ static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept 
 static std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
     return ::numa_pagesize();
-    // #elif defined(__unix__) || defined(__APPLE__)
-    //     return ::sysconf(_SC_PAGESIZE);
+#elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
+    return ::sysconf(_SC_PAGESIZE);
 #else
     return 4096;
+#endif
+}
+
+/**
+ *  @brief Fetches the total RAM amount available on the system in bytes.
+ *  @retval Total system RAM in bytes, or 0 if detection fails.
+ *  @note This function provides cross-platform detection of total physical memory.
+ */
+static std::size_t get_ram_total_volume() noexcept {
+#if defined(__linux__)
+    // On Linux, read from /proc/meminfo
+    FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
+    if (!meminfo_file) return 0;
+
+    char line[256];
+    while (::fgets(line, sizeof(line), meminfo_file)) {
+        if (::strncmp(line, "MemTotal:", 9) == 0) {
+            std::size_t memory_kb = 0;
+            if (::sscanf(line, "MemTotal: %zu kB", &memory_kb) == 1) {
+                ::fclose(meminfo_file);
+                return memory_kb * 1024; // Convert kB to bytes
+            }
+        }
+    }
+    ::fclose(meminfo_file);
+    return 0;
+#elif defined(__APPLE__)
+    // On macOS, use sysctl
+    int mib[2] = {CTL_HW, HW_MEMSIZE};
+    std::uint64_t memory_bytes = 0;
+    std::size_t size = sizeof(memory_bytes);
+    if (::sysctl(mib, 2, &memory_bytes, &size, nullptr, 0) == 0) return static_cast<std::size_t>(memory_bytes);
+    return 0;
+#elif defined(_WIN32)
+    // On Windows, use GlobalMemoryStatusEx
+    MEMORYSTATUSEX mem_status;
+    mem_status.dwLength = sizeof(mem_status);
+    if (::GlobalMemoryStatusEx(&mem_status)) return static_cast<std::size_t>(mem_status.ullTotalPhys);
+    return 0;
+#elif defined(__unix__) || defined(__unix) || defined(unix)
+    // On other Unix systems, try sysconf
+    long pages = ::sysconf(_SC_PHYS_PAGES);
+    long page_size = ::sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page_size > 0) return static_cast<std::size_t>(pages) * static_cast<std::size_t>(page_size);
+    return 0;
+#else
+    // Fallback: return 0 if platform is not supported
+    return 0;
 #endif
 }
 
@@ -1664,6 +1723,7 @@ class ram_page_settings {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
     std::array<ram_page_setting_t, max_page_sizes_k> sizes_ {0}; // ? Huge page sizes in bytes
     std::size_t count_sizes_ {0};                                // ? Number of supported huge page sizes
+    std::size_t total_memory_bytes_ {0};                         // ? Total memory available on this NUMA node
   public:
     /**
      *  @brief Finds the largest Huge Pages size available for the given NUMA node.
@@ -1759,6 +1819,29 @@ class ram_page_settings {
             ++count_sizes;
         }
         ::closedir(hugepages_dir);
+
+        // Read total memory for this NUMA node from meminfo
+        char meminfo_path[256];
+        path_result =
+            std::snprintf(meminfo_path, sizeof(meminfo_path), "/sys/devices/system/node/node%d/meminfo", node_id);
+        if (path_result > 0 && static_cast<std::size_t>(path_result) < sizeof(meminfo_path)) {
+            FILE *meminfo_file = ::fopen(meminfo_path, "r");
+            if (meminfo_file) {
+                char line[256];
+                while (::fgets(line, sizeof(line), meminfo_file)) {
+                    if (::strncmp(line, "Node ", 5) == 0 && ::strstr(line, " MemTotal:")) {
+                        // Parse line like "Node 0 MemTotal:    32768000 kB"
+                        std::size_t memory_kb = 0;
+                        if (::sscanf(line, "Node %*d MemTotal: %zu kB", &memory_kb) == 1) {
+                            total_memory_bytes_ = memory_kb * 1024; // Convert kB to bytes
+                            break;
+                        }
+                    }
+                }
+                ::fclose(meminfo_file);
+            }
+        }
+
         count_sizes_ = count_sizes;
         return true;
 #else
@@ -1767,6 +1850,7 @@ class ram_page_settings {
     }
 
     std::size_t size() const noexcept { return count_sizes_; }
+    std::size_t total_memory_bytes() const noexcept { return total_memory_bytes_; }
     ram_page_setting_t const *begin() const noexcept { return sizes_.data(); }
     ram_page_setting_t const *end() const noexcept { return sizes_.data() + count_sizes_; }
     ram_page_setting_t const &operator[](std::size_t const index) const noexcept {
