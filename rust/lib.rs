@@ -17,9 +17,270 @@ extern crate std;
 #[cfg(feature = "std")]
 use std::ffi::CStr;
 
+use core::cell::UnsafeCell;
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use core::slice;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// A generic spin mutex that uses CPU-specific pause instructions for efficient busy-waiting.
+///
+/// This is a low-level synchronization primitive that spins on a busy loop rather than
+/// blocking the thread. It's most appropriate for very short critical sections where
+/// the cost of context switching would be higher than busy-waiting.
+///
+/// The generic parameter `P` allows customization of the pause behavior:
+/// - `true` enables CPU-specific pause instructions (recommended for most use cases)
+/// - `false` disables pause instructions (may be useful in some specialized scenarios)
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// // Create a spin mutex with pause instructions enabled
+/// let mutex = BasicSpinMutex::<i32, true>::new(42);
+///
+/// // Lock, access data, and unlock
+/// {
+///     let mut guard = mutex.lock();
+///     *guard = 100;
+/// } // Lock is automatically released when guard goes out of scope
+///
+/// // Verify the value was changed
+/// assert_eq!(*mutex.lock(), 100);
+/// ```
+///
+/// # Performance Characteristics
+///
+/// - **Very fast for short critical sections** - no syscalls or context switches
+/// - **CPU-efficient busy-waiting** - uses pause instructions when `P = true`
+/// - **Memory efficient** - only requires a single atomic bool plus the protected data
+/// - **Can cause high CPU usage** - spins continuously until lock is acquired
+/// - **Not fair** - no guarantee of acquisition order
+///
+/// # When to Use
+///
+/// Use `BasicSpinMutex` when:
+/// - Critical sections are very short (microseconds)
+/// - Lock contention is low
+/// - You need the absolute minimum latency
+/// - You're in a no_std environment
+///
+/// Avoid `BasicSpinMutex` when:
+/// - Critical sections are long (milliseconds or more)
+/// - Lock contention is high
+/// - You need fairness guarantees
+/// - Power consumption is a concern
+pub struct BasicSpinMutex<T, const PAUSE: bool> {
+    locked: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+impl<T, const PAUSE: bool> BasicSpinMutex<T, PAUSE> {
+    /// Creates a new spin mutex in the unlocked state.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The value to be protected by the mutex
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// ```
+    pub const fn new(data: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    /// Acquires the lock, returning a guard that provides access to the protected data.
+    ///
+    /// This method will spin until the lock is acquired. If the lock is already held,
+    /// it will busy-wait using CPU-specific pause instructions (if `PAUSE = true`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// let mut guard = mutex.lock();
+    /// *guard = 42;
+    /// ```
+    pub fn lock(&self) -> BasicSpinMutexGuard<T, PAUSE> {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // Busy-wait with pause instructions if enabled
+            if PAUSE {
+                core::hint::spin_loop();
+            }
+        }
+        BasicSpinMutexGuard { mutex: self }
+    }
+
+    /// Attempts to acquire the lock without blocking.
+    ///
+    /// Returns `Some(guard)` if the lock was successfully acquired, or `None` if
+    /// the lock is currently held by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    ///
+    /// if let Some(mut guard) = mutex.try_lock() {
+    ///     *guard = 42;
+    ///     println!("Lock acquired and value set");
+    /// } else {
+    ///     println!("Lock is currently held by another thread");
+    /// };
+    /// ```
+    pub fn try_lock(&self) -> Option<BasicSpinMutexGuard<T, PAUSE>> {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(BasicSpinMutexGuard { mutex: self })
+        } else {
+            None
+        }
+    }
+
+    /// Checks if the mutex is currently locked.
+    ///
+    /// This method provides a non-blocking way to check the lock state, but should
+    /// be used carefully as the state can change immediately after this call returns.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// assert!(!mutex.is_locked());
+    ///
+    /// {
+    ///     let _guard = mutex.lock();
+    ///     assert!(mutex.is_locked());
+    /// }
+    ///
+    /// assert!(!mutex.is_locked());
+    /// ```
+    pub fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Acquire)
+    }
+
+    /// Consumes the mutex and returns the protected data.
+    ///
+    /// This method bypasses the locking mechanism entirely since we have exclusive
+    /// ownership of the mutex.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(42);
+    /// let data = mutex.into_inner();
+    /// assert_eq!(data, 42);
+    /// ```
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
+    }
+
+    /// Gets a mutable reference to the protected data.
+    ///
+    /// Since this requires a mutable reference to the mutex, no locking is needed
+    /// as we have exclusive access.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// *mutex.get_mut() = 42;
+    /// assert_eq!(*mutex.lock(), 42);
+    /// ```
+    pub fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+}
+
+// Safety: BasicSpinMutex can be sent between threads if T can be sent
+unsafe impl<T: Send, const PAUSE: bool> Send for BasicSpinMutex<T, PAUSE> {}
+// Safety: BasicSpinMutex can be shared between threads if T can be sent
+unsafe impl<T: Send, const PAUSE: bool> Sync for BasicSpinMutex<T, PAUSE> {}
+
+/// A guard providing access to the data protected by a `BasicSpinMutex`.
+///
+/// The lock is automatically released when this guard is dropped.
+pub struct BasicSpinMutexGuard<'a, T, const PAUSE: bool> {
+    mutex: &'a BasicSpinMutex<T, PAUSE>,
+}
+
+impl<'a, T, const PAUSE: bool> BasicSpinMutexGuard<'a, T, PAUSE> {
+    /// Returns a reference to the protected data.
+    ///
+    /// This method is rarely needed since the guard implements `Deref`.
+    pub fn get(&self) -> &T {
+        unsafe { &*self.mutex.data.get() }
+    }
+
+    /// Returns a mutable reference to the protected data.
+    ///
+    /// This method is rarely needed since the guard implements `DerefMut`.
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> core::ops::Deref for BasicSpinMutexGuard<'a, T, PAUSE> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> core::ops::DerefMut for BasicSpinMutexGuard<'a, T, PAUSE> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> Drop for BasicSpinMutexGuard<'a, T, PAUSE> {
+    fn drop(&mut self) {
+        self.mutex.locked.store(false, Ordering::Release);
+    }
+}
+
+/// A type alias for the most commonly used spin mutex configuration.
+///
+/// This is equivalent to `BasicSpinMutex<T, true>`, which enables CPU-specific
+/// pause instructions for efficient busy-waiting.
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// let mutex = SpinMutex::new(42);
+/// let mut guard = mutex.lock();
+/// *guard = 100;
+/// ```
+pub type SpinMutex<T> = BasicSpinMutex<T, true>;
 
 /// A "prong" - the tip of a "fork" - pinning a "task" to a "thread" and "memory" location.
 ///
