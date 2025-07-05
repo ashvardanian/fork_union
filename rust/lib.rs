@@ -1002,6 +1002,477 @@ pub fn default_numa_allocator() -> Option<PinnedAllocator> {
     PinnedAllocator::new(0)
 }
 
+/// A Vec-like container that uses NUMA-aware pinned memory allocation.
+///
+/// `PinnedVec<T>` provides a dynamic array similar to `std::vec::Vec<T>` but
+/// allocates memory on a specific NUMA node for optimal performance in
+/// multi-socket systems. The memory is allocated using the `PinnedAllocator`
+/// and automatically manages growth and shrinkage.
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// // Create a vector on NUMA node 0
+/// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+/// let mut vec = PinnedVec::<u64>::new_in(allocator);
+/// 
+/// // Add elements
+/// vec.push(42).expect("Failed to push");
+/// vec.push(100).expect("Failed to push");
+/// 
+/// // Access elements
+/// assert_eq!(vec.len(), 2);
+/// assert_eq!(vec[0], 42);
+/// assert_eq!(vec[1], 100);
+/// 
+/// // Iterate over elements
+/// for (i, &value) in vec.iter().enumerate() {
+///     println!("Element {}: {}", i, value);
+/// }
+/// ```
+pub struct PinnedVec<T> {
+    allocator: PinnedAllocator,
+    allocation: Option<AllocationResult>,
+    len: usize,
+    capacity: usize,
+    _phantom: core::marker::PhantomData<T>,
+}
+
+impl<T> PinnedVec<T> {
+    /// Creates a new empty `PinnedVec` using the specified allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `allocator` - The `PinnedAllocator` to use for memory allocation
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let vec = PinnedVec::<i32>::new_in(allocator);
+    /// assert_eq!(vec.len(), 0);
+    /// assert_eq!(vec.capacity(), 0);
+    /// ```
+    pub fn new_in(allocator: PinnedAllocator) -> Self {
+        Self {
+            allocator,
+            allocation: None,
+            len: 0,
+            capacity: 0,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
+    /// Creates a new `PinnedVec` with the specified capacity using the given allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `allocator` - The `PinnedAllocator` to use for memory allocation
+    /// * `capacity` - The initial capacity to allocate
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let vec = PinnedVec::<i32>::with_capacity_in(allocator, 100).expect("Failed to create PinnedVec");
+    /// assert_eq!(vec.len(), 0);
+    /// assert_eq!(vec.capacity(), 100);
+    /// ```
+    pub fn with_capacity_in(allocator: PinnedAllocator, capacity: usize) -> Option<Self> {
+        let mut vec = Self {
+            allocator,
+            allocation: None,
+            len: 0,
+            capacity: 0,
+            _phantom: core::marker::PhantomData,
+        };
+        
+        if capacity > 0 {
+            vec.reserve(capacity).ok()?;
+        }
+        
+        Some(vec)
+    }
+
+    /// Returns the number of elements in the vector.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the vector contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the number of elements the vector can hold without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Returns the NUMA node this vector's memory is allocated on.
+    pub fn numa_node(&self) -> usize {
+        self.allocator.numa_node()
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// # Arguments
+    ///
+    /// * `additional` - The number of additional elements to reserve space for
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.reserve(10).expect("Failed to reserve");
+    /// assert!(vec.capacity() >= 10);
+    /// ```
+    pub fn reserve(&mut self, additional: usize) -> Result<(), &'static str> {
+        let needed_capacity = self.len.checked_add(additional).ok_or("Capacity overflow")?;
+        if needed_capacity <= self.capacity {
+            return Ok(());
+        }
+
+        let new_capacity = needed_capacity.max(self.capacity * 2).max(4);
+        self.grow_to(new_capacity)
+    }
+
+    /// Grows the vector to the specified capacity.
+    fn grow_to(&mut self, new_capacity: usize) -> Result<(), &'static str> {
+        if new_capacity <= self.capacity {
+            return Ok(());
+        }
+
+        let new_allocation = self.allocator
+            .allocate_for::<T>(new_capacity)
+            .ok_or("Failed to allocate memory")?;
+
+        if let Some(old_allocation) = self.allocation.take() {
+            // Copy existing elements to new allocation
+            unsafe {
+                let old_ptr = old_allocation.as_ptr() as *const T;
+                let new_ptr = new_allocation.as_ptr() as *mut T;
+                core::ptr::copy_nonoverlapping(old_ptr, new_ptr, self.len);
+            }
+        }
+
+        self.allocation = Some(new_allocation);
+        self.capacity = new_capacity;
+        Ok(())
+    }
+
+    /// Appends an element to the back of the vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The element to append
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// assert_eq!(vec.len(), 1);
+    /// assert_eq!(vec[0], 42);
+    /// ```
+    pub fn push(&mut self, value: T) -> Result<(), &'static str> {
+        if self.len >= self.capacity {
+            self.reserve(1)?;
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr().add(self.len);
+            core::ptr::write(ptr, value);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Removes the last element from the vector and returns it.
+    ///
+    /// # Returns
+    ///
+    /// The last element, or `None` if the vector is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// assert_eq!(vec.pop(), Some(42));
+    /// assert_eq!(vec.pop(), None);
+    /// ```
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        self.len -= 1;
+        unsafe {
+            let ptr = self.as_mut_ptr().add(self.len);
+            Some(core::ptr::read(ptr))
+        }
+    }
+
+    /// Clears the vector, removing all values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    /// 
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// vec.clear();
+    /// assert_eq!(vec.len(), 0);
+    /// ```
+    pub fn clear(&mut self) {
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            for i in 0..self.len {
+                core::ptr::drop_in_place(ptr.add(i));
+            }
+        }
+        self.len = 0;
+    }
+
+    /// Returns a raw pointer to the vector's buffer.
+    pub fn as_ptr(&self) -> *const T {
+        match &self.allocation {
+            Some(alloc) => alloc.as_ptr() as *const T,
+            None => core::ptr::NonNull::dangling().as_ptr(),
+        }
+    }
+
+    /// Returns a mutable raw pointer to the vector's buffer.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        match &self.allocation {
+            Some(alloc) => alloc.as_ptr() as *mut T,
+            None => core::ptr::NonNull::dangling().as_ptr(),
+        }
+    }
+
+    /// Returns a slice containing the entire vector.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    /// Returns a mutable slice containing the entire vector.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+
+    /// Returns an iterator over the vector.
+    pub fn iter(&self) -> core::slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+
+    /// Returns a mutable iterator over the vector.
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
+    }
+
+    /// Inserts an element at position `index`, shifting all elements after it to the right.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The position to insert at
+    /// * `element` - The element to insert
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index > len`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    pub fn insert(&mut self, index: usize, element: T) -> Result<(), &'static str> {
+        if index > self.len {
+            panic!("insertion index (is {}) should be <= len (is {})", index, self.len);
+        }
+
+        if self.len >= self.capacity {
+            self.reserve(1)?;
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            core::ptr::copy(ptr.add(index), ptr.add(index + 1), self.len - index);
+            core::ptr::write(ptr.add(index), element);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Removes and returns the element at position `index`, shifting all elements after it to the left.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The position to remove from
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= len`.
+    pub fn remove(&mut self, index: usize) -> T {
+        if index >= self.len {
+            panic!("removal index (is {}) should be < len (is {})", index, self.len);
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            let result = core::ptr::read(ptr.add(index));
+            core::ptr::copy(ptr.add(index + 1), ptr.add(index), self.len - index - 1);
+            self.len -= 1;
+            result
+        }
+    }
+
+    /// Extend the vector by cloning elements from a slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The slice to copy elements from
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    pub fn extend_from_slice(&mut self, other: &[T]) -> Result<(), &'static str> 
+    where 
+        T: Clone,
+    {
+        self.reserve(other.len())?;
+        for item in other {
+            self.push(item.clone())?;
+        }
+        Ok(())
+    }
+}
+
+impl<T> core::ops::Index<usize> for PinnedVec<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<T> core::ops::IndexMut<usize> for PinnedVec<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.as_mut_slice()[index]
+    }
+}
+
+impl<T> Drop for PinnedVec<T> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+unsafe impl<T: Send> Send for PinnedVec<T> {}
+unsafe impl<T: Sync> Sync for PinnedVec<T> {}
+
+/// A thread-safe wrapper around raw pointers for sharing read-only data across threads.
+///
+/// This type is designed for scenarios where you need to share immutable data
+/// across async tasks or threads, particularly when the standard borrowing rules
+/// would prevent such sharing. The caller is responsible for ensuring that:
+/// - The pointed-to data remains valid for the lifetime of use
+/// - The data is not modified while being accessed through `SyncConstPtr`
+///
+/// # Safety
+///
+/// This type is marked as `Send + Sync` but requires careful usage:
+/// - Only use with data that won't be modified during the lifetime of the pointer
+/// - Ensure the pointed-to data outlives all uses of the `SyncConstPtr`
+/// - The `get` method is unsafe and requires the caller to ensure bounds checking
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+/// 
+/// let data = vec![1, 2, 3, 4, 5];
+/// let sync_ptr = SyncConstPtr::new(data.as_ptr());
+/// 
+/// // Safe to use in async contexts
+/// let value = unsafe { sync_ptr.get(0) };
+/// assert_eq!(*value, 1);
+/// ```
+#[derive(Copy, Clone, Debug)]
+pub struct SyncConstPtr<T> {
+    ptr: *const T,
+}
+
+impl<T> SyncConstPtr<T> {
+    /// Creates a new `SyncConstPtr` from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - The pointer is valid for the intended usage duration
+    /// - The pointed-to data will not be modified during use
+    /// - The pointer is properly aligned for type `T`
+    pub fn new(ptr: *const T) -> Self {
+        Self { ptr }
+    }
+
+    /// Gets a reference to the element at the given index.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - The index is within bounds of the allocated data
+    /// - The data at the index is properly initialized
+    /// - The data remains valid for the lifetime of the returned reference
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The index of the element to access
+    ///
+    /// # Returns
+    ///
+    /// A reference to the element at the given index.
+    pub unsafe fn get(&self, index: usize) -> &T {
+        &*self.ptr.add(index)
+    }
+
+    /// Returns the raw pointer.
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+}
+
+unsafe impl<T> Send for SyncConstPtr<T> {}
+unsafe impl<T> Sync for SyncConstPtr<T> {}
+
 /// Operation object for parallel thread execution with explicit broadcast/join control.
 pub struct ForThreadsOperation<'a, F>
 where
@@ -1517,5 +1988,230 @@ mod tests {
         if allocation.bytes_per_page() > 0 {
             assert!(allocation.bytes_per_page() >= 512); // Reasonable minimum page size
         }
+    }
+
+    #[test]
+    fn test_pinned_vec_creation() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let vec = PinnedVec::<i32>::new_in(allocator);
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.capacity(), 0);
+        assert_eq!(vec.numa_node(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_with_capacity() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let vec = PinnedVec::<i32>::with_capacity_in(allocator, 10).expect("Failed to create PinnedVec");
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.capacity(), 10);
+        assert_eq!(vec.numa_node(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_push_pop() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        
+        // Test push
+        vec.push(42).expect("Failed to push");
+        assert_eq!(vec.len(), 1);
+        assert!(!vec.is_empty());
+        assert_eq!(vec[0], 42);
+
+        vec.push(100).expect("Failed to push");
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[1], 100);
+
+        // Test pop
+        assert_eq!(vec.pop(), Some(100));
+        assert_eq!(vec.len(), 1);
+        assert_eq!(vec.pop(), Some(42));
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.pop(), None);
+    }
+
+    #[test]
+    fn test_pinned_vec_indexing() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(10).expect("Failed to push");
+        vec.push(20).expect("Failed to push");
+        vec.push(30).expect("Failed to push");
+
+        // Test indexing
+        assert_eq!(vec[0], 10);
+        assert_eq!(vec[1], 20);
+        assert_eq!(vec[2], 30);
+
+        // Test mutable indexing
+        vec[1] = 25;
+        assert_eq!(vec[1], 25);
+    }
+
+    #[test]
+    fn test_pinned_vec_clear() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(1).expect("Failed to push");
+        vec.push(2).expect("Failed to push");
+        vec.push(3).expect("Failed to push");
+
+        assert_eq!(vec.len(), 3);
+        vec.clear();
+        assert_eq!(vec.len(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_insert_remove() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(1).expect("Failed to push");
+        vec.push(3).expect("Failed to push");
+
+        // Insert in the middle
+        vec.insert(1, 2).expect("Failed to insert");
+        assert_eq!(vec.len(), 3);
+        assert_eq!(vec[0], 1);
+        assert_eq!(vec[1], 2);
+        assert_eq!(vec[2], 3);
+
+        // Remove from the middle
+        let removed = vec.remove(1);
+        assert_eq!(removed, 2);
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[0], 1);
+        assert_eq!(vec[1], 3);
+    }
+
+    #[test]
+    fn test_pinned_vec_reserve() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        assert_eq!(vec.capacity(), 0);
+
+        vec.reserve(10).expect("Failed to reserve");
+        assert!(vec.capacity() >= 10);
+        assert_eq!(vec.len(), 0);
+
+        // Adding elements shouldn't require new allocation
+        for i in 0..10 {
+            vec.push(i).expect("Failed to push");
+        }
+        assert_eq!(vec.len(), 10);
+    }
+
+    #[test]
+    fn test_pinned_vec_extend_from_slice() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        let data = [1, 2, 3, 4, 5];
+        
+        vec.extend_from_slice(&data).expect("Failed to extend");
+        assert_eq!(vec.len(), 5);
+        for (i, &value) in data.iter().enumerate() {
+            assert_eq!(vec[i], value);
+        }
+    }
+
+    #[test]
+    fn test_pinned_vec_iterators() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        for i in 0..5 {
+            vec.push(i).expect("Failed to push");
+        }
+
+        // Test immutable iterator
+        let collected: Vec<i32> = vec.iter().copied().collect();
+        let expected = Vec::from([0, 1, 2, 3, 4]);
+        assert_eq!(collected, expected);
+
+        // Test mutable iterator
+        for value in vec.iter_mut() {
+            *value *= 2;
+        }
+        assert_eq!(vec[0], 0);
+        assert_eq!(vec[1], 2);
+        assert_eq!(vec[2], 4);
+        assert_eq!(vec[3], 6);
+        assert_eq!(vec[4], 8);
+    }
+
+    #[test]
+    fn test_pinned_vec_slices() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        for i in 0..5 {
+            vec.push(i).expect("Failed to push");
+        }
+
+        // Test as_slice
+        let slice = vec.as_slice();
+        assert_eq!(slice.len(), 5);
+        assert_eq!(slice[2], 2);
+
+        // Test as_mut_slice
+        let mut_slice = vec.as_mut_slice();
+        mut_slice[2] = 99;
+        assert_eq!(vec[2], 99);
+    }
+
+    #[test]
+    fn test_pinned_vec_growth() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        
+        // Push many elements to test growth
+        for i in 0..100 {
+            vec.push(i).expect("Failed to push");
+        }
+        
+        assert_eq!(vec.len(), 100);
+        for i in 0..100 {
+            assert_eq!(vec[i], i as i32);
+        }
+    }
+
+    #[test]
+    fn test_pinned_vec_invalid_numa_node() {
+        let numa_count = count_numa_nodes();
+        let allocator = PinnedAllocator::new(numa_count + 1);
+        assert!(allocator.is_none());
+    }
+
+    #[test]
+    fn test_sync_const_ptr() {
+        let data = Vec::from([1, 2, 3, 4, 5]);
+        let sync_ptr = SyncConstPtr::new(data.as_ptr());
+        
+        unsafe {
+            assert_eq!(*sync_ptr.get(0), 1);
+            assert_eq!(*sync_ptr.get(2), 3);
+            assert_eq!(*sync_ptr.get(4), 5);
+        }
+        
+        assert_eq!(sync_ptr.as_ptr(), data.as_ptr());
+    }
+
+    #[test]
+    fn test_sync_const_ptr_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        
+        assert_send::<SyncConstPtr<i32>>();
+        assert_sync::<SyncConstPtr<i32>>();
+    }
+
+    #[test]
+    fn test_pinned_vec_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        
+        assert_send::<PinnedVec<i32>>();
+        assert_sync::<PinnedVec<i32>>();
     }
 }
