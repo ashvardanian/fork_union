@@ -353,6 +353,7 @@ extern "C" {
     fn fu_pool_count_threads(pool: *mut c_void) -> usize;
     fn fu_pool_count_colocations(pool: *mut c_void) -> usize;
     fn fu_pool_count_threads_in(pool: *mut c_void, colocation_index: usize) -> usize;
+    fn fu_pool_locate_thread_in(pool: *mut c_void, global_thread_index: usize, colocation_index: usize) -> usize;
 
     #[allow(dead_code)]
     fn fu_pool_for_threads(
@@ -681,6 +682,24 @@ impl ThreadPool {
     /// ```
     pub fn count_threads_in(&self, colocation_index: usize) -> usize {
         unsafe { fu_pool_count_threads_in(self.inner, colocation_index) }
+    }
+
+    /// Converts a global thread index to a local thread index within a colocation.
+    ///
+    /// This is useful for distributed thread pools where threads are grouped into
+    /// colocations (NUMA nodes or QoS levels). The local index can be used for
+    /// per-colocation data structures or algorithms.
+    ///
+    /// # Arguments
+    ///
+    /// * `global_thread_index` - The global thread index to convert
+    /// * `colocation_index` - The colocation to get the local index for
+    ///
+    /// # Returns
+    ///
+    /// The local thread index within the specified colocation.
+    pub fn locate_thread_in(&self, global_thread_index: usize, colocation_index: usize) -> usize {
+        unsafe { fu_pool_locate_thread_in(self.inner, global_thread_index, colocation_index) }
     }
 
     /// Transitions worker threads to a power-saving sleep state.

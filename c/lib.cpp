@@ -345,6 +345,14 @@ size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index) {
     return std::visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);
 }
 
+size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index) {
+    assert(pool != nullptr);
+    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    return std::visit([=](auto &variant) { 
+        return variant.thread_local_index(global_thread_index, colocation_index);
+    }, opaque->variants);
+}
+
 #pragma endregion - Lifetime
 
 #pragma region - Primary API

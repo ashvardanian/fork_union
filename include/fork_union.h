@@ -481,6 +481,15 @@ size_t fu_pool_count_threads(fu_pool_t *pool);
  */
 size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index);
 
+/**
+ *  @brief Converts a global thread index to a local thread index within a colocation.
+ *  @param[in] pool Thread pool handle, must not be NULL.
+ *  @param[in] global_thread_index The global thread index to convert.
+ *  @param[in] colocation_index Index of the colocation, must be < `fu_pool_count_colocations(pool)`.
+ *  @retval Local thread index within the specified colocation.
+ */
+size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index);
+
 #pragma endregion - Lifetime
 
 #pragma region - Primary API
