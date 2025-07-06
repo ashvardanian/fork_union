@@ -2002,6 +2002,46 @@ where
     });
 }
 
+/// Splits a range of tasks into fair-sized chunks for parallel distribution.
+///
+/// The first `(tasks % threads)` chunks have size `ceil(tasks / threads)`.
+/// The remaining chunks have size `floor(tasks / threads)`.
+///
+/// This ensures optimal load balancing across threads with minimal size variance.
+/// See: https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/
+#[derive(Debug, Clone)]
+pub struct IndexedSplit {
+    quotient: usize,
+    remainder: usize,
+}
+
+impl IndexedSplit {
+    /// Creates a new indexed split for distributing tasks across threads.
+    ///
+    /// # Arguments
+    ///
+    /// * `tasks_count` - Total number of tasks to distribute
+    /// * `threads_count` - Number of threads to distribute across (must be > 0)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `threads_count` is zero.
+    pub fn new(tasks_count: usize, threads_count: usize) -> Self {
+        assert!(threads_count > 0, "Threads count must be greater than zero");
+        Self {
+            quotient: tasks_count / threads_count,
+            remainder: tasks_count % threads_count,
+        }
+    }
+
+    /// Returns the range for a specific thread index.
+    pub fn get(&self, thread_index: usize) -> core::ops::Range<usize> {
+        let begin = self.quotient * thread_index + thread_index.min(self.remainder);
+        let count = self.quotient + if thread_index < self.remainder { 1 } else { 0 };
+        begin..(begin + count)
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "std")]
 mod tests {
