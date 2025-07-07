@@ -1532,13 +1532,21 @@ inline capabilities_t cpu_capabilities() noexcept {
     // Basic YIELD is always available on AArch64
     caps = static_cast<capabilities_t>(caps | capability_arm64_yield_k);
 
-    // Check for WFET support via ID_AA64ISAR2_EL1 register
-    std::uint64_t id_aa64isar2_el0;
+    // Use sysctl to check for WFET support on Apple platforms
+#if defined(__APPLE__)
+    int wfet_support = 0;
+    size_t size = sizeof(wfet_support);
+    if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
+        caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
+#else
+    // On non-Apple ARM systems, try to read the system register
+    // Note: This may fail on some systems where userspace access is restricted
+    std::uint64_t id_aa64isar2_el0 = 0;
     __asm__ __volatile__("mrs %0, ID_AA64ISAR2_EL0" : "=r"(id_aa64isar2_el0) : : "memory");
-
     // WFET is bits [3:0], value 2 indicates WFET support
     std::uint64_t const wfet_field = id_aa64isar2_el0 & 0xF;
     if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
+#endif
 
 #elif _FU_DETECT_ARCH_RISC5
 
