@@ -261,10 +261,10 @@ int main(void) {
     std::printf("Welcome to the Fork Union N-Body simulation!\n");
 
     // Read env vars
-    std::size_t n = std::stoul(std::getenv("NBODY_COUNT") ?: "0");
-    std::size_t const iterations = std::stoul(std::getenv("NBODY_ITERATIONS") ?: "1000");
+    std::size_t n = std::stoull(std::getenv("NBODY_COUNT") ?: "0");
+    std::size_t const iterations = std::stoull(std::getenv("NBODY_ITERATIONS") ?: "1000");
     std::string_view const backend = std::getenv("NBODY_BACKEND") ? std::getenv("NBODY_BACKEND") : "fork_union_static";
-    std::size_t threads = std::stoul(std::getenv("NBODY_THREADS") ?: "0");
+    std::size_t threads = std::stoull(std::getenv("NBODY_THREADS") ?: "0");
     if (threads == 0) threads = std::thread::hardware_concurrency();
     if (n == 0) n = threads;
 
