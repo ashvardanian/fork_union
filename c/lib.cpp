@@ -143,7 +143,9 @@ size_t fu_count_quality_levels(void) {
     return 1; // TODO: One day I'll get some of those weird CPUs to do this
 }
 
-size_t fu_volume_huge_pages(size_t numa_node_index) {
+size_t fu_volume_any_pages(void) { return fu::get_ram_total_volume(); }
+
+size_t fu_volume_huge_pages_in(size_t numa_node_index) {
 #if FU_ENABLE_NUMA
     size_t total_volume = 0;
     auto const &node = global_numa_topology.node(numa_node_index);
@@ -154,13 +156,13 @@ size_t fu_volume_huge_pages(size_t numa_node_index) {
 #endif
 }
 
-size_t fu_volume_any_pages(size_t numa_node_index) {
+size_t fu_volume_any_pages_in(size_t numa_node_index) {
 #if FU_ENABLE_NUMA
     if (!globals_initialize()) return 0;
     if (numa_node_index >= global_numa_topology.nodes_count()) return 0;
 
     auto const &node = global_numa_topology.node(numa_node_index);
-    return node.total_memory_bytes();
+    return node.memory_size;
 #else
     return fu::get_ram_total_volume();
 #endif
@@ -348,9 +350,8 @@ size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index) {
 size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    return std::visit([=](auto &variant) { 
-        return variant.thread_local_index(global_thread_index, colocation_index);
-    }, opaque->variants);
+    return std::visit([=](auto &variant) { return variant.thread_local_index(global_thread_index, colocation_index); },
+                      opaque->variants);
 }
 
 #pragma endregion - Lifetime
