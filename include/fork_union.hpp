@@ -1519,6 +1519,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     // Check for basic PAUSE instruction support (always available on x86-64)
     caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
 
+#if defined(__GNUC__) || defined(__clang__) // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
     std::uint32_t eax, ebx, ecx, edx;
 
@@ -1528,6 +1529,7 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WAITPKG is bit 5 in ECX
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+#endif
 
 #elif _FU_DETECT_ARCH_ARM64
 
@@ -1540,7 +1542,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     size_t size = sizeof(wfet_support);
     if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
         caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
-#else
+#elif defined(__GNUC__) || defined(__clang__) // We use inline assembly - unavailable in MSVC
     // On non-Apple ARM systems, try to read the system register
     // Note: This may fail on some systems where userspace access is restricted
     std::uint64_t id_aa64isar2_el0 = 0;
@@ -3592,26 +3594,18 @@ struct logging_colors_t {
 
     explicit logging_colors_t(bool use_colors) noexcept : use_colors_(use_colors) {}
 
-#if FU_ENABLE_NUMA
-    explicit logging_colors_t(int file_descriptor = STDOUT_FILENO) noexcept {
-        if (!::isatty(file_descriptor)) return;
-
-        char const *term = std::getenv("TERM");
-        if (!term) return;
-
-        use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
-                      std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
-    }
-#else
     explicit logging_colors_t() noexcept {
+#if defined(_WIN32)
+        if (!::isatty(_fileno(stdout))) return;
+#endif
+#if defined(__unix__) || defined(__APPLE__)
+        if (!::isatty(STDOUT_FILENO)) return;
+#endif
         char const *term = std::getenv("TERM");
         if (!term) return;
-
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
     }
-
-#endif
 
     /* ANSI style codes */
     char const *reset() { return use_colors_ ? "\033[0m" : ""; }
