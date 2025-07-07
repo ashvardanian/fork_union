@@ -36,7 +36,7 @@ bool test_indexed_split() noexcept {
 
             fu::indexed_split<index_type_> split {static_cast<index_type_>(tasks), static_cast<index_type_>(threads)};
             for (std::size_t thread = 0; thread < threads; ++thread) {
-                auto subrange = split[thread];
+                auto subrange = split[static_cast<index_type_>(thread)];
                 for (std::size_t task = subrange.first; task < subrange.first + subrange.count; ++task) {
                     if (task >= tasks) return false; // Out of bounds
                     if (visits[task]) return false;  // Already visited
