@@ -115,8 +115,6 @@
 #define _CRT_SECURE_NO_WARNINGS // Disable "This function or variable may be unsafe" warnings
 #include <windows.h>            // `GlobalMemoryStatusEx`
 #include <io.h>                 // `_isatty`, `_fileno`
-#undef NOMINMAX
-#undef _CRT_SECURE_NO_WARNINGS
 #endif
 
 /**
