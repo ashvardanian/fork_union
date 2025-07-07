@@ -64,7 +64,10 @@ fn create_distributed_embeddings(
     memory_scope_percent: usize,
 ) -> Option<DistributedEmbeddings> {
     let colocations_count = fu::count_colocations();
-    println!("Initializing storage across {} colocations", colocations_count);
+    println!(
+        "Initializing storage across {} colocations",
+        colocations_count
+    );
 
     // Calculate total capacity based on total system memory and scope percentage
     let total_memory = fu::volume_any_pages();
