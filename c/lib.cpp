@@ -16,6 +16,7 @@ using thread_allocator_t = std::allocator<std::thread>;
 
 using pool_variants_t = std::variant< //
 
+#if _FU_WITH_ASM_YIELDS
 #if _FU_DETECT_ARCH_X86_64
     fu::basic_pool<thread_allocator_t, fu::x86_pause_t>,  //
     fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>, //
@@ -27,9 +28,11 @@ using pool_variants_t = std::variant< //
 #if _FU_DETECT_ARCH_RISC5
     fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>, //
 #endif
+#endif // _FU_WITH_ASM_YIELDS
 
 #if FU_ENABLE_NUMA
     fu::linux_distributed_pool<fu::standard_yield_t>, //
+#if _FU_WITH_ASM_YIELDS
 #if _FU_DETECT_ARCH_X86_64
     fu::linux_distributed_pool<fu::x86_pause_t>,  //
     fu::linux_distributed_pool<fu::x86_tpause_t>, //
@@ -41,7 +44,9 @@ using pool_variants_t = std::variant< //
 #if _FU_DETECT_ARCH_RISC5
     fu::linux_distributed_pool<fu::risc5_pause_t>, //
 #endif
-#endif
+#endif // _FU_WITH_ASM_YIELDS
+#endif // FU_ENABLE_NUMA
+
     fu::basic_pool<thread_allocator_t, fu::standard_yield_t> //
     >;
 
@@ -232,6 +237,7 @@ fu_pool_t *fu_pool_new(char const *name) {
         return nullptr;
     }
 
+#if _FU_WITH_ASM_YIELDS
 #if _FU_DETECT_ARCH_X86_64
     if (global_capabilities & fu::capability_x86_tpause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_tpause_t>>, name,
@@ -263,9 +269,11 @@ fu_pool_t *fu_pool_new(char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
+#endif // _FU_WITH_ASM_YIELDS
 #endif // FU_ENABLE_NUMA
 
     // Common case of using modern hardware, but not having Linux installed
+#if _FU_WITH_ASM_YIELDS
 #if _FU_DETECT_ARCH_X86_64
     if (global_capabilities & fu::capability_x86_tpause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>>);
@@ -292,6 +300,7 @@ fu_pool_t *fu_pool_new(char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
+#endif // _FU_WITH_ASM_YIELDS
 
     // Worst case, use the standard yield pool
     new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::standard_yield_t>>);

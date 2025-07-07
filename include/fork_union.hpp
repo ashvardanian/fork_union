@@ -157,6 +157,12 @@
 #define _FU_UNLIKELY(x) (x)
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define _FU_WITH_ASM_YIELDS 1
+#else
+#define _FU_WITH_ASM_YIELDS 0
+#endif
+
 /*  Detect target CPU architecture.
  *  We'll only use it when compiling Inline Assembly code on GCC or Clang.
  */
@@ -1411,7 +1417,7 @@ concept is_unsafe_pool =   //
 
 #pragma region - Hardware Friendly Yield
 
-#if defined(__GNUC__) || defined(__clang__) // We need inline assembly support
+#if _FU_WITH_ASM_YIELDS // We need inline assembly support
 
 #if _FU_DETECT_ARCH_ARM64
 
@@ -1425,6 +1431,12 @@ struct arm64_yield_t {
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
  */
+#pragma GCC push_options
+#pragma GCC target("+wfxt")
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("+wfxt"))), apply_to = function)
+#endif
+
 struct arm64_wfet_t {
     inline void operator()() const noexcept {
         std::uint64_t cntfrq_el0, cntvct_el0;
@@ -1439,6 +1451,11 @@ struct arm64_wfet_t {
         __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
     }
 };
+
+#pragma GCC pop_options
+#if defined(__clang__)
+#pragma clang attribute pop
+#endif
 
 #endif // _FU_DETECT_ARCH_ARM64
 
@@ -1519,7 +1536,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     // Check for basic PAUSE instruction support (always available on x86-64)
     caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
 
-#if defined(__GNUC__) || defined(__clang__) // We use inline assembly - unavailable in MSVC
+#if _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
     std::uint32_t eax, ebx, ecx, edx;
 
@@ -1542,7 +1559,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     size_t size = sizeof(wfet_support);
     if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
         caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
-#elif defined(__GNUC__) || defined(__clang__) // We use inline assembly - unavailable in MSVC
+#elif _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
     // On non-Apple ARM systems, try to read the system register
     // Note: This may fail on some systems where userspace access is restricted
     std::uint64_t id_aa64isar2_el0 = 0;
