@@ -38,8 +38,14 @@
 #include <span>   // `std::span`
 #include <bit>    // `std::bit_cast`
 
+// Clang generally defines `_OPENMP` when OpenMP, but compiling it is
+/// tricky and the header may not be available.
 #if defined(_OPENMP)
+#if __has_include(<omp.h>)
 #include <omp.h>
+#else
+#undef _OPENMP
+#endif
 #endif
 
 #include <fork_union.hpp>
