@@ -1450,8 +1450,18 @@ struct arm64_wfet_t {
         // Fetch current counter value and build the deadline
         __asm__ __volatile__("mrs %0, CNTVCT_EL0" : "=r"(cntvct_el0));
         std::uint64_t const deadline = cntvct_el0 + ticks_per_us;
-        // Enter timed wait: WFET <Xt>.
-        __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
+        // We want to enter a timed wait as `WFET <Xt>`, but Clang 15 doesn't recognize it yet.
+        //
+        //      __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
+        //
+        // So instead, we can encode the instruction manually as `D50320XX`,
+        // where XX encodes the lower bits of Xt - the deadline register number.
+        __asm__ __volatile__(    //
+            "mov x0, %0\n"       // move the deadline to x0
+            ".inst 0xD5032000\n" // wfet x0
+            :
+            : "r"(deadline)
+            : "x0", "memory", "cc");
     }
 };
 
