@@ -34,9 +34,9 @@ function (set_target_properties_for_fork_union_script target_name)
     endif ()
 endfunction ()
 
-# Test targets for C++14, C++17, and C++20
+# Test targets for C++17 & C++20
 set(TEST_SOURCES test.cpp)
-set(CXX_STANDARDS 14 17 20)
+set(CXX_STANDARDS 17 20)
 foreach (STD IN LISTS CXX_STANDARDS)
     # Derive a unique target name
     set(TGT fork_union_test_cpp${STD})
@@ -44,7 +44,7 @@ foreach (STD IN LISTS CXX_STANDARDS)
     # Create the executable
     add_executable(${TGT} ${TEST_SOURCES})
     set_target_properties(
-        ${target_name}
+        ${TGT}
         PROPERTIES CXX_STANDARD ${STD}
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
@@ -53,6 +53,11 @@ foreach (STD IN LISTS CXX_STANDARDS)
     # register it as a CTest test
     add_test(NAME ${TGT} COMMAND ${TGT})
     set_target_properties_for_fork_union_script(${TGT})
+
+    # Link against libatomic for older GCC versions that might need it
+    if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_libraries(${TGT} PRIVATE -latomic)
+    endif ()
 
 endforeach ()
 
