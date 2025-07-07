@@ -1242,10 +1242,9 @@ pub fn default_numa_allocator() -> Option<PinnedAllocator> {
 
 /// A Vec-like container that uses NUMA-aware pinned memory allocation.
 ///
-/// `PinnedVec<T>` provides a dynamic array similar to `std::vec::Vec<T>` but
-/// allocates memory on a specific NUMA node for optimal performance in
-/// multi-socket systems. The memory is allocated using the `PinnedAllocator`
-/// and automatically manages growth and shrinkage.
+/// `PinnedVec<T>` provides a dynamic array that allocates memory on a specific
+/// NUMA node, which should correspond to a `colocation_index` for optimal
+/// performance with `ThreadPool`. It automatically manages growth and shrinkage.
 ///
 /// # Examples
 ///
@@ -1270,6 +1269,7 @@ pub fn default_numa_allocator() -> Option<PinnedAllocator> {
 ///     println!("Element {}: {}", i, value);
 /// }
 /// ```
+#[derive(Debug)]
 pub struct PinnedVec<T> {
     allocator: PinnedAllocator,
     allocation: Option<AllocationResult>,
@@ -1799,10 +1799,9 @@ unsafe impl<T: Send> Send for PinnedVec<T> {}
 unsafe impl<T: Sync> Sync for PinnedVec<T> {}
 
 /// A NUMA-aware distributed vector that manages an array of `PinnedVec`s,
-/// each tied to its own `PinnedAllocator` and NUMA node.
-///
-/// This allows for efficient parallel operations across multiple NUMA nodes
-/// while maintaining data locality and avoiding cross-NUMA memory access penalties.
+/// each pinned to a specific NUMA node. This structure enables data locality
+/// for parallel operations by distributing elements in a round-robin fashion
+/// across NUMA nodes, minimizing cross-node memory access penalties.
 ///
 /// # Examples
 ///
@@ -1816,8 +1815,8 @@ unsafe impl<T: Sync> Sync for PinnedVec<T> {}
 /// rr_vec.fill(42, &mut pool);
 /// ```
 pub struct RoundRobinVec<T> {
-    pinned_vecs: PinnedVec<PinnedVec<T>>,
-    total_len: usize,
+    colocations: PinnedVec<PinnedVec<T>>,
+    total_length: usize,
     total_capacity: usize,
 }
 
@@ -1834,33 +1833,33 @@ impl<T> RoundRobinVec<T> {
     /// use fork_union::*;
     ///
     /// let rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
-    /// assert_eq!(rr_vec.numa_count(), count_numa_nodes());
+    /// assert_eq!(rr_vec.colocations_count(), count_colocations());
     /// ```
     pub fn new() -> Option<Self> {
-        let numa_count = count_numa_nodes();
-        if numa_count == 0 {
+        let colocations_count = count_colocations();
+        if colocations_count == 0 {
             return None;
         }
 
         // Use the first NUMA node to allocate the container
         let container_allocator = PinnedAllocator::new(0)?;
-        let mut pinned_vecs = PinnedVec::with_capacity_in(container_allocator, numa_count)?;
+        let mut colocations = PinnedVec::with_capacity_in(container_allocator, colocations_count)?;
 
         // Create a PinnedVec for each NUMA node
-        for numa_node in 0..numa_count {
-            let allocator = PinnedAllocator::new(numa_node)?;
+        for colocation_index in 0..colocations_count {
+            let allocator = PinnedAllocator::new(colocation_index)?;
             let vec = PinnedVec::new_in(allocator);
-            pinned_vecs.push(vec).ok()?;
+            colocations.push(vec).ok()?;
         }
 
         let mut total_capacity = 0;
-        for i in 0..pinned_vecs.len() {
-            total_capacity += pinned_vecs[i].capacity();
+        for i in 0..colocations.len() {
+            total_capacity += colocations[i].capacity();
         }
 
         Some(Self {
-            pinned_vecs,
-            total_len: 0,
+            colocations,
+            total_length: 0,
             total_capacity,
         })
     }
@@ -1880,76 +1879,76 @@ impl<T> RoundRobinVec<T> {
     /// ```rust
     /// use fork_union::*;
     ///
-    /// let rr_vec = RoundRobinVec::<i32>::with_capacity_per_node(1000)
+    /// let rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
     ///     .expect("Failed to create RoundRobinVec");
     ///
-    /// for i in 0..rr_vec.numa_count() {
+    /// for i in 0..rr_vec.colocations_count() {
     ///     assert_eq!(rr_vec.capacity_at(i), 1000);
     /// }
     /// ```
-    pub fn with_capacity_per_node(capacity_per_node: usize) -> Option<Self> {
-        let numa_count = count_numa_nodes();
-        if numa_count == 0 {
+    pub fn with_capacity_per_colocation(capacity_per_colocation: usize) -> Option<Self> {
+        let colocations_count = count_colocations();
+        if colocations_count == 0 {
             return None;
         }
 
         // Use the first NUMA node to allocate the container
         let container_allocator = PinnedAllocator::new(0)?;
-        let mut pinned_vecs = PinnedVec::with_capacity_in(container_allocator, numa_count)?;
+        let mut colocations = PinnedVec::with_capacity_in(container_allocator, colocations_count)?;
 
         // Create a PinnedVec with capacity for each NUMA node
-        for numa_node in 0..numa_count {
-            let allocator = PinnedAllocator::new(numa_node)?;
-            let vec = PinnedVec::with_capacity_in(allocator, capacity_per_node)?;
-            pinned_vecs.push(vec).ok()?;
+        for colocation_index in 0..colocations_count {
+            let allocator = PinnedAllocator::new(colocation_index)?;
+            let vec = PinnedVec::with_capacity_in(allocator, capacity_per_colocation)?;
+            colocations.push(vec).ok()?;
         }
 
         let mut total_capacity = 0;
-        for i in 0..pinned_vecs.len() {
-            total_capacity += pinned_vecs[i].capacity();
+        for i in 0..colocations.len() {
+            total_capacity += colocations[i].capacity();
         }
 
         Some(Self {
-            pinned_vecs,
-            total_len: 0,
+            colocations,
+            total_length: 0,
             total_capacity,
         })
     }
 
-    /// Returns the number of NUMA nodes (and thus the number of `PinnedVec`s).
-    pub fn numa_count(&self) -> usize {
-        self.pinned_vecs.len()
+    /// Returns the number of colocations (and thus the number of `PinnedVec`s).
+    pub fn colocations_count(&self) -> usize {
+        self.colocations.len()
     }
 
-    /// Returns the length of the vector at the specified NUMA node.
+    /// Returns the length of the vector at the specified colocation.
     ///
     /// # Arguments
     ///
-    /// * `numa_node` - The NUMA node index
+    /// * `colocation_index` - The colocation index
     ///
     /// # Returns
     ///
-    /// The length of the vector at the specified NUMA node, or 0 if the node doesn't exist.
-    pub fn len_at(&self, numa_node: usize) -> usize {
-        self.pinned_vecs[numa_node].len()
+    /// The length of the vector at the specified colocation, or 0 if the node doesn't exist.
+    pub fn len_at(&self, colocation_index: usize) -> usize {
+        self.colocations[colocation_index].len()
     }
 
-    /// Returns the capacity of the vector at the specified NUMA node.
+    /// Returns the capacity of the vector at the specified colocation.
     ///
     /// # Arguments
     ///
-    /// * `numa_node` - The NUMA node index
+    /// * `colocation_index` - The colocation index
     ///
     /// # Returns
     ///
-    /// The capacity of the vector at the specified NUMA node, or 0 if the node doesn't exist.
-    pub fn capacity_at(&self, numa_node: usize) -> usize {
-        self.pinned_vecs[numa_node].capacity()
+    /// The capacity of the vector at the specified colocation, or 0 if the node doesn't exist.
+    pub fn capacity_at(&self, colocation_index: usize) -> usize {
+        self.colocations[colocation_index].capacity()
     }
 
     /// Returns the total length across all NUMA nodes.
     pub fn len(&self) -> usize {
-        self.total_len
+        self.total_length
     }
 
     /// Returns the total capacity across all NUMA nodes.
@@ -1959,46 +1958,46 @@ impl<T> RoundRobinVec<T> {
 
     /// Returns `true` if the distributed vector contains no elements.
     pub fn is_empty(&self) -> bool {
-        self.total_len == 0
+        self.total_length == 0
     }
 
-    /// Gets a reference to the `PinnedVec` at the specified NUMA node.
+    /// Gets a reference to the `PinnedVec` at the specified colocation.
     ///
     /// # Arguments
     ///
-    /// * `numa_node` - The NUMA node index
+    /// * `colocation_index` - The colocation index
     ///
     /// # Returns
     ///
-    /// A reference to the `PinnedVec` at the specified NUMA node, or `None` if the node doesn't exist.
-    pub fn get_vec(&self, numa_node: usize) -> Option<&PinnedVec<T>> {
-        self.pinned_vecs.get(numa_node)
+    /// A reference to the `PinnedVec` at the specified colocation, or `None` if the node doesn't exist.
+    pub fn get_colocation(&self, colocation_index: usize) -> Option<&PinnedVec<T>> {
+        self.colocations.get(colocation_index)
     }
 
-    /// Gets a mutable reference to the `PinnedVec` at the specified NUMA node.
+    /// Gets a mutable reference to the `PinnedVec` at the specified colocation.
     ///
     /// # Arguments
     ///
-    /// * `numa_node` - The NUMA node index
+    /// * `colocation_index` - The colocation index
     ///
     /// # Returns
     ///
-    /// A mutable reference to the `PinnedVec` at the specified NUMA node, or `None` if the node doesn't exist.
-    pub fn get_vec_mut(&mut self, numa_node: usize) -> Option<&mut PinnedVec<T>> {
-        self.pinned_vecs.get_mut(numa_node)
+    /// A mutable reference to the `PinnedVec` at the specified colocation, or `None` if the node doesn't exist.
+    pub fn get_colocation_mut(&mut self, colocation_index: usize) -> Option<&mut PinnedVec<T>> {
+        self.colocations.get_mut(colocation_index)
     }
 
-    /// Gets a reference to an element at the specified global index using round-robin distribution.
-    ///
-    /// Global element I is at position I/N in the pinned vector I%N, where N is the number of NUMA nodes.
+    /// Accesses an element at a global `index` using round-robin distribution.
+    /// The element at global `index` is located at `local_index = index / N`
+    /// in the `PinnedVec` on `numa_node = index % N`, where `N` is the number of NUMA nodes.
     ///
     /// # Arguments
     ///
-    /// * `index` - The global index
+    /// * `index` - The global round-robin index of the element.
     ///
     /// # Returns
     ///
-    /// A reference to the element at the specified index, or `None` if the index is out of bounds.
+    /// A reference to the element, or `None` if the index is out of bounds.
     ///
     /// # Examples
     ///
@@ -2012,47 +2011,48 @@ impl<T> RoundRobinVec<T> {
     /// }
     /// ```
     pub fn get(&self, index: usize) -> Option<&T> {
-        if self.pinned_vecs.is_empty() {
+        if self.colocations.is_empty() {
             return None;
         }
 
-        let numa_count = self.pinned_vecs.len();
-        let numa_node = index % numa_count;
-        let local_index = index / numa_count;
+        let colocations_count = self.colocations.len();
+        let colocation_index = index % colocations_count;
+        let local_index = index / colocations_count;
 
-        self.pinned_vecs.get(numa_node)?.get(local_index)
+        self.colocations.get(colocation_index)?.get(local_index)
     }
 
-    /// Gets a mutable reference to an element at the specified global index using round-robin distribution.
-    ///
-    /// Global element I is at position I/N in the pinned vector I%N, where N is the number of NUMA nodes.
+    /// Mutably accesses an element at a global `index` using round-robin distribution.
+    /// The element at global `index` is located at `local_index = index / N`
+    /// in the `PinnedVec` on `numa_node = index % N`, where `N` is the number of NUMA nodes.
     ///
     /// # Arguments
     ///
-    /// * `index` - The global index
+    /// * `index` - The global round-robin index of the element.
     ///
     /// # Returns
     ///
-    /// A mutable reference to the element at the specified index, or `None` if the index is out of bounds.
+    /// A mutable reference to the element, or `None` if the index is out of bounds.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        if self.pinned_vecs.is_empty() {
+        if self.colocations.is_empty() {
             return None;
         }
 
-        let numa_count = self.pinned_vecs.len();
-        let numa_node = index % numa_count;
-        let local_index = index / numa_count;
+        let colocations_count = self.colocations.len();
+        let colocation_index = index % colocations_count;
+        let local_index = index / colocations_count;
 
-        self.pinned_vecs.get_mut(numa_node)?.get_mut(local_index)
+        self.colocations
+            .get_mut(colocation_index)?
+            .get_mut(local_index)
     }
 
-    /// Pushes an element to the distributed vector using round-robin distribution.
-    ///
-    /// The element is added to the NUMA node with the smallest current length to maintain balance.
+    /// Appends an element to the distributed vector, using round-robin distribution
+    /// to select the target NUMA node based on the current total length.
     ///
     /// # Arguments
     ///
-    /// * `value` - The element to add
+    /// * `value` - The element to add.
     ///
     /// # Errors
     ///
@@ -2068,24 +2068,24 @@ impl<T> RoundRobinVec<T> {
     /// assert_eq!(rr_vec.len(), 1);
     /// ```
     pub fn push(&mut self, value: T) -> Result<(), &'static str> {
-        if self.pinned_vecs.is_empty() {
+        if self.colocations.is_empty() {
             return Err("No NUMA nodes available");
         }
 
         // Use round-robin distribution based on current total length
-        let target_numa = self.total_len % self.pinned_vecs.len();
-        let result = self.pinned_vecs[target_numa].push(value);
+        let target_colocation = self.total_length % self.colocations.len();
+        let result = self.colocations[target_colocation].push(value);
 
         if result.is_ok() {
-            self.total_len += 1;
+            self.total_length += 1;
         }
 
         result
     }
 
     /// Removes and returns the last element from the distributed vector.
-    ///
-    /// This removes from the NUMA node with the largest current length to maintain balance.
+    /// The element is popped from the NUMA node it was last pushed to, maintaining
+    /// round-robin balance.
     ///
     /// # Returns
     ///
@@ -2102,16 +2102,16 @@ impl<T> RoundRobinVec<T> {
     /// assert_eq!(rr_vec.pop(), None);
     /// ```
     pub fn pop(&mut self) -> Option<T> {
-        if self.total_len == 0 {
+        if self.total_length == 0 {
             return None;
         }
 
         // Pop from the last inserted position (reverse round-robin)
-        let target_numa = (self.total_len - 1) % self.pinned_vecs.len();
-        let result = self.pinned_vecs[target_numa].pop();
+        let target_colocation = (self.total_length - 1) % self.colocations.len();
+        let result = self.colocations[target_colocation].pop();
 
         if result.is_some() {
-            self.total_len -= 1;
+            self.total_length -= 1;
         }
 
         result
@@ -2130,8 +2130,8 @@ impl<T> RoundRobinVec<T> {
     /// # Returns
     ///
     /// The global index where this element would be accessed via `get(global_index)`.
-    pub fn local_to_global_index(&self, numa_node: usize, local_index: usize) -> usize {
-        local_index * self.numa_count() + numa_node
+    pub fn local_to_global_index(&self, colocation_index: usize, local_index: usize) -> usize {
+        local_index * self.colocations_count() + colocation_index
     }
 
     /// Converts a global round-robin index to the NUMA node and local index.
@@ -2144,12 +2144,12 @@ impl<T> RoundRobinVec<T> {
     ///
     /// # Returns
     ///
-    /// A tuple of (numa_node, local_index) where the element is stored.
+    /// A tuple of (colocation_index, local_index) where the element is stored.
     pub fn global_to_local_index(&self, global_index: usize) -> (usize, usize) {
-        let numa_count = self.numa_count();
-        let numa_node = global_index % numa_count;
-        let local_index = global_index / numa_count;
-        (numa_node, local_index)
+        let colocations_count = self.colocations_count();
+        let colocation_index = global_index % colocations_count;
+        let local_index = global_index / colocations_count;
+        (colocation_index, local_index)
     }
 
     /// Fills all vectors across all NUMA nodes with copies of the given value,
@@ -2166,12 +2166,12 @@ impl<T> RoundRobinVec<T> {
     /// use fork_union::*;
     ///
     /// let mut pool = ThreadPool::try_spawn(4).expect("Failed to create pool");
-    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_node(1000)
+    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
     ///     .expect("Failed to create RoundRobinVec");
     ///
     /// // Resize all vectors to have some elements
-    /// for i in 0..rr_vec.numa_count() {
-    ///     rr_vec.get_vec_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
+    /// for i in 0..rr_vec.colocations_count() {
+    ///     rr_vec.get_colocation_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
     /// }
     ///
     /// // Fill all vectors with the value 42
@@ -2181,12 +2181,12 @@ impl<T> RoundRobinVec<T> {
     where
         T: Clone + Send + Sync,
     {
-        let numa_count = self.numa_count();
-        let safe_ptr = SafePtr(self.pinned_vecs.as_mut_ptr());
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
         let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
 
         pool.for_threads(move |thread_index, colocation_index| {
-            if colocation_index < numa_count {
+            if colocation_index < colocations_count {
                 // Get the specific pinned vector for this NUMA node
                 let node_vec = safe_ptr.get_mut_at(colocation_index);
                 let pool = pool_ptr.get_mut();
@@ -2220,12 +2220,12 @@ impl<T> RoundRobinVec<T> {
     /// use fork_union::*;
     ///
     /// let mut pool = ThreadPool::try_spawn(4).expect("Failed to create pool");
-    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_node(1000)
+    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
     ///     .expect("Failed to create RoundRobinVec");
     ///
     /// // Resize all vectors to have some elements
-    /// for i in 0..rr_vec.numa_count() {
-    ///     rr_vec.get_vec_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
+    /// for i in 0..rr_vec.colocations_count() {
+    ///     rr_vec.get_colocation_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
     /// }
     ///
     /// // Fill all vectors with random values
@@ -2236,13 +2236,13 @@ impl<T> RoundRobinVec<T> {
         F: FnMut() -> T + Send + Sync,
         T: Send + Sync,
     {
-        let numa_count = self.numa_count();
-        let safe_ptr = SafePtr(self.pinned_vecs.as_mut_ptr());
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
         let f_ptr = SafePtr(&mut f as *mut F);
         let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
 
         pool.for_threads(move |thread_index, colocation_index| {
-            if colocation_index < numa_count {
+            if colocation_index < colocations_count {
                 // Get the specific pinned vector for this NUMA node
                 let node_vec = safe_ptr.get_mut_at(colocation_index);
                 let f_ref = f_ptr.get_mut();
@@ -2269,12 +2269,12 @@ impl<T> RoundRobinVec<T> {
     ///
     /// * `pool` - The thread pool to use for parallel execution
     pub fn clear(&mut self, pool: &mut ThreadPool) {
-        let numa_count = self.numa_count();
-        let safe_ptr = SafePtr(self.pinned_vecs.as_mut_ptr());
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
         let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
 
         pool.for_threads(move |thread_index, colocation_index| {
-            if colocation_index < numa_count {
+            if colocation_index < colocations_count {
                 // Get the specific pinned vector for this NUMA node
                 let node_vec = safe_ptr.get_mut_at(colocation_index);
                 let pool = pool_ptr.get_mut();
@@ -2295,10 +2295,10 @@ impl<T> RoundRobinVec<T> {
         });
 
         // Reset lengths of individual vectors after parallel dropping
-        for i in 0..self.pinned_vecs.len() {
-            self.pinned_vecs[i].len = 0;
+        for i in 0..self.colocations.len() {
+            self.colocations[i].len = 0;
         }
-        self.total_len = 0;
+        self.total_length = 0;
     }
 
     /// Resizes all vectors across all NUMA nodes to the specified length,
@@ -2322,36 +2322,36 @@ impl<T> RoundRobinVec<T> {
     where
         T: Clone + Send + Sync,
     {
-        let numa_count = self.numa_count();
-        if numa_count == 0 {
+        let colocations_count = self.colocations_count();
+        if colocations_count == 0 {
             return Err("No NUMA nodes available");
         }
 
         // Calculate how many elements each NUMA node should have
-        let elements_per_node = new_len / numa_count;
-        let extra_elements = new_len % numa_count;
+        let elements_per_node = new_len / colocations_count;
+        let extra_elements = new_len % colocations_count;
 
         // Step 1: Centrally handle reallocation for each NUMA node
-        for i in 0..numa_count {
+        for i in 0..colocations_count {
             let node_len = if i < extra_elements {
                 elements_per_node + 1
             } else {
                 elements_per_node
             };
 
-            let current_len = self.pinned_vecs[i].len();
+            let current_len = self.colocations[i].len();
             if node_len > current_len {
                 // Need to reserve more capacity
-                self.pinned_vecs[i].reserve(node_len - current_len)?;
+                self.colocations[i].reserve(node_len - current_len)?;
             }
         }
 
         // Step 2: Parallel construction/destruction of elements using IndexedSplit
-        let safe_ptr = SafePtr(self.pinned_vecs.as_mut_ptr());
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
         let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
 
         pool.for_threads(move |thread_index, colocation_index| {
-            if colocation_index < numa_count {
+            if colocation_index < colocations_count {
                 // Get the specific pinned vector for this NUMA node
                 let node_vec = safe_ptr.get_mut_at(colocation_index);
                 let pool = pool_ptr.get_mut();
@@ -2397,16 +2397,16 @@ impl<T> RoundRobinVec<T> {
         });
 
         // Step 3: Update lengths after parallel operations
-        for i in 0..numa_count {
+        for i in 0..colocations_count {
             let node_len = if i < extra_elements {
                 elements_per_node + 1
             } else {
                 elements_per_node
             };
-            self.pinned_vecs[i].len = node_len;
+            self.colocations[i].len = node_len;
         }
 
-        self.total_len = new_len;
+        self.total_length = new_len;
         self.total_capacity = self.capacity(); // Recalculate total capacity
         Ok(())
     }

@@ -19,7 +19,7 @@ use std::env;
 use std::time::Instant;
 
 use fork_union as fu;
-use simsimd::{Distance, SpatialSimilarity};
+use simsimd::{bf16, Distance, SpatialSimilarity};
 
 /// Embedding dimensions - fixed at compile time for better performance
 const EMBEDDING_DIMENSIONS: usize = 768;
@@ -28,22 +28,22 @@ const EMBEDDING_DIMENSIONS: usize = 768;
 const DEFAULT_MEMORY_SCOPE_PERCENT: usize = 25;
 
 /// A fixed-size vector type for compile-time optimizations
-type Embedding = [f32; EMBEDDING_DIMENSIONS];
+type Embedding = [bf16; EMBEDDING_DIMENSIONS];
 
 /// Result of a search operation - stored on stack to avoid heap allocations
 #[derive(Debug, Clone, Copy)]
 struct SearchResult {
     best_similarity: Distance,
     best_index: usize,
-    numa_node: usize,
+    colocation_index: usize,
 }
 
 impl SearchResult {
-    fn new(numa_node: usize) -> Self {
+    fn new(colocation_index: usize) -> Self {
         Self {
             best_similarity: Distance::NEG_INFINITY,
             best_index: 0,
-            numa_node,
+            colocation_index,
         }
     }
 
@@ -63,8 +63,8 @@ fn create_distributed_embeddings(
     pool: &mut fu::ThreadPool,
     memory_scope_percent: usize,
 ) -> Option<DistributedEmbeddings> {
-    let numa_count = fu::count_numa_nodes();
-    println!("Initializing storage across {} NUMA nodes", numa_count);
+    let colocations_count = fu::count_colocations();
+    println!("Initializing storage across {} colocations", colocations_count);
 
     // Calculate total capacity based on total system memory and scope percentage
     let total_memory = fu::volume_any_pages();
@@ -93,7 +93,7 @@ fn create_distributed_embeddings(
     let mut distributed_vec = DistributedEmbeddings::new()?;
 
     // Initialize with zero vectors first, then fill with random data
-    let zero_embedding = [0.0f32; EMBEDDING_DIMENSIONS];
+    let zero_embedding = [bf16::from_f32(0.0); EMBEDDING_DIMENSIONS];
     distributed_vec
         .resize(total_vectors, zero_embedding, pool)
         .ok()?;
@@ -102,9 +102,9 @@ fn create_distributed_embeddings(
     distributed_vec.fill_with(
         || {
             let mut rng = rng();
-            let mut embedding = [0.0f32; EMBEDDING_DIMENSIONS];
+            let mut embedding = [bf16::from_f32(0.0); EMBEDDING_DIMENSIONS];
             for dim in 0..EMBEDDING_DIMENSIONS {
-                embedding[dim] = rng.random_range(-1.0..1.0);
+                embedding[dim] = bf16::from_f32(rng.random_range(-1.0..1.0));
             }
             embedding
         },
@@ -112,9 +112,9 @@ fn create_distributed_embeddings(
     );
 
     println!(
-        "Successfully created {} vectors across {} NUMA nodes",
+        "Successfully created {} vectors across {} colocations",
         distributed_vec.len(),
-        numa_count
+        colocations_count
     );
     Some(distributed_vec)
 }
@@ -125,7 +125,7 @@ fn numa_aware_search(
     query: &Embedding,
     pool: &mut fu::ThreadPool,
 ) -> SearchResult {
-    let numa_count = storage.numa_count();
+    let colocations_count = storage.colocations_count();
 
     // Use SpinMutex for the global best result
     let best_result = fu::SpinMutex::new(SearchResult::new(0));
@@ -146,11 +146,11 @@ fn numa_aware_search(
         let pool = pool_ptr.get_mut();
 
         // Each thread works on its colocated NUMA node
-        if colocation_index < numa_count {
+        if colocation_index < colocations_count {
             let mut local_result = SearchResult::new(colocation_index);
 
             // Get the vectors for this NUMA node
-            if let Some(node_vectors) = storage.get_vec(colocation_index) {
+            if let Some(node_vectors) = storage.get_colocation(colocation_index) {
                 let vectors_count = node_vectors.len();
                 let threads_in_colocation = pool.count_threads_in(colocation_index);
                 let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
@@ -162,7 +162,7 @@ fn numa_aware_search(
                 // Search vectors assigned to this thread
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = f32::cosine(query, vector).unwrap();
+                        let similarity = bf16::cosine(query, vector).unwrap();
                         // Convert local index to global round-robin index using the new method
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
@@ -192,7 +192,7 @@ fn worst_case_search(
     query: &Embedding,
     pool: &mut fu::ThreadPool,
 ) -> SearchResult {
-    let numa_count = storage.numa_count();
+    let colocations_count = storage.colocations_count();
 
     // Use SpinMutex for the global best result
     let best_result = fu::SpinMutex::new(SearchResult::new(0));
@@ -216,8 +216,8 @@ fn worst_case_search(
         // Split all vectors across all threads (ignoring NUMA boundaries)
         let total_threads: usize = pool.threads();
 
-        for numa_node in 0..numa_count {
-            if let Some(node_vectors) = storage.get_vec(numa_node) {
+        for colocation_index in 0..colocations_count {
+            if let Some(node_vectors) = storage.get_colocation(colocation_index) {
                 let vectors_in_node = node_vectors.len();
 
                 let split = fu::IndexedSplit::new(vectors_in_node, total_threads);
@@ -226,10 +226,10 @@ fn worst_case_search(
                 // Search vectors assigned to this thread, regardless of NUMA locality
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = f32::cosine(query, vector).unwrap();
+                        let similarity = bf16::cosine(query, vector).unwrap();
                         // Convert to global index for consistent comparison
                         let global_index =
-                            storage.local_to_global_index(numa_node, local_vector_idx);
+                            storage.local_to_global_index(colocation_index, local_vector_idx);
                         local_result.update_if_better(similarity, global_index);
                     }
                 }
@@ -272,8 +272,8 @@ fn benchmark_search<F>(
         if i < 5 {
             // Print first few results
             println!(
-                "Query {}: best similarity {:.6} at index {} (NUMA node {})",
-                i, result.best_similarity, result.best_index, result.numa_node
+                "Query {}: best similarity {:.6} at index {} (colocation {})",
+                i, result.best_similarity, result.best_index, result.colocation_index
             );
         }
     }
@@ -344,9 +344,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut queries = Vec::with_capacity(query_count);
 
     for _ in 0..query_count {
-        let mut query = [0.0f32; EMBEDDING_DIMENSIONS];
+        let mut query = [bf16::from_f32(0.0); EMBEDDING_DIMENSIONS];
         for dim in 0..EMBEDDING_DIMENSIONS {
-            query[dim] = rng.random_range(-1.0..1.0);
+            query[dim] = bf16::from_f32(rng.random_range(-1.0..1.0));
         }
         queries.push(query);
     }
