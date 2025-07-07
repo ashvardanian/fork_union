@@ -7,8 +7,8 @@ project(
     LANGUAGES CXX
 )
 
-# Enforce C++11
-set(PROJECT_CXX_STANDARD 11)
+# Enforce C++17 as the minimum standard for the project.
+set(PROJECT_CXX_STANDARD 17)
 set(PROJECT_CXX_EXTENSIONS OFF)
 set(PROJECT_CXX_STANDARD_REQUIRED ON)
 
@@ -22,7 +22,7 @@ target_include_directories(
 add_library(fork_union_dynamic SHARED c/lib.cpp)
 add_library(fork_union_static STATIC c/lib.cpp)
 
-# Require C++17 for the implementation libraries only
+# Prefer C++20 for library builds
 set_target_properties(
     fork_union_dynamic fork_union_static
     PROPERTIES CXX_STANDARD 20

@@ -1,4 +1,4 @@
-//! OpenMP-style cross-platform fine-grained parallelism library.
+//! Low-latency OpenMP-style NUMA-aware thread pool for fork-join parallelism.
 //!
 //! Fork Union provides a minimalistic cross-platform thread-pool implementation and Parallel Algorithms,
 //! avoiding dynamic memory allocations, exceptions, system calls, and heavy Compare-And-Swap instructions.
@@ -17,9 +17,251 @@ extern crate std;
 #[cfg(feature = "std")]
 use std::ffi::CStr;
 
+use core::cell::UnsafeCell;
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use core::slice;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// A generic spin mutex that uses CPU-specific pause instructions for efficient busy-waiting.
+///
+/// This is a low-level synchronization primitive that spins on a busy loop rather than
+/// blocking the thread. It's most appropriate for very short critical sections where
+/// the cost of context switching would be higher than busy-waiting.
+///
+/// The generic parameter `P` allows customization of the pause behavior:
+/// - `true` enables CPU-specific pause instructions (recommended for most use cases)
+/// - `false` disables pause instructions (may be useful in some specialized scenarios)
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// // Create a spin mutex with pause instructions enabled
+/// let mutex = BasicSpinMutex::<i32, true>::new(42);
+///
+/// // Lock, access data, and unlock
+/// {
+///     let mut guard = mutex.lock();
+///     *guard = 100;
+/// } // Lock is automatically released when guard goes out of scope
+///
+/// // Verify the value was changed
+/// assert_eq!(*mutex.lock(), 100);
+/// ```
+///
+/// Fast for short critical sections but spins continuously. Use when latency matters
+/// more than CPU usage. Avoid for long critical sections or high contention scenarios.
+pub struct BasicSpinMutex<T, const PAUSE: bool> {
+    locked: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+impl<T, const PAUSE: bool> BasicSpinMutex<T, PAUSE> {
+    /// Creates a new spin mutex in the unlocked state.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The value to be protected by the mutex
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// ```
+    pub const fn new(data: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    /// Acquires the lock, returning a guard that provides access to the protected data.
+    ///
+    /// This method will spin until the lock is acquired. If the lock is already held,
+    /// it will busy-wait using CPU-specific pause instructions (if `PAUSE = true`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// let mut guard = mutex.lock();
+    /// *guard = 42;
+    /// ```
+    pub fn lock(&self) -> BasicSpinMutexGuard<T, PAUSE> {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // Busy-wait with pause instructions if enabled
+            if PAUSE {
+                core::hint::spin_loop();
+            }
+        }
+        BasicSpinMutexGuard { mutex: self }
+    }
+
+    /// Attempts to acquire the lock without blocking.
+    ///
+    /// Returns `Some(guard)` if the lock was successfully acquired, or `None` if
+    /// the lock is currently held by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    ///
+    /// if let Some(mut guard) = mutex.try_lock() {
+    ///     *guard = 42;
+    ///     println!("Lock acquired and value set");
+    /// } else {
+    ///     println!("Lock is currently held by another thread");
+    /// };
+    /// ```
+    pub fn try_lock(&self) -> Option<BasicSpinMutexGuard<T, PAUSE>> {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(BasicSpinMutexGuard { mutex: self })
+        } else {
+            None
+        }
+    }
+
+    /// Checks if the mutex is currently locked.
+    ///
+    /// This method provides a non-blocking way to check the lock state, but should
+    /// be used carefully as the state can change immediately after this call returns.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// assert!(!mutex.is_locked());
+    ///
+    /// {
+    ///     let _guard = mutex.lock();
+    ///     assert!(mutex.is_locked());
+    /// }
+    ///
+    /// assert!(!mutex.is_locked());
+    /// ```
+    pub fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Acquire)
+    }
+
+    /// Consumes the mutex and returns the protected data.
+    ///
+    /// This method bypasses the locking mechanism entirely since we have exclusive
+    /// ownership of the mutex.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mutex = BasicSpinMutex::<i32, true>::new(42);
+    /// let data = mutex.into_inner();
+    /// assert_eq!(data, 42);
+    /// ```
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
+    }
+
+    /// Gets a mutable reference to the protected data.
+    ///
+    /// Since this requires a mutable reference to the mutex, no locking is needed
+    /// as we have exclusive access.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut mutex = BasicSpinMutex::<i32, true>::new(0);
+    /// *mutex.get_mut() = 42;
+    /// assert_eq!(*mutex.lock(), 42);
+    /// ```
+    pub fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+}
+
+// Safety: BasicSpinMutex can be sent between threads if T can be sent
+unsafe impl<T: Send, const PAUSE: bool> Send for BasicSpinMutex<T, PAUSE> {}
+// Safety: BasicSpinMutex can be shared between threads if T can be sent
+unsafe impl<T: Send, const PAUSE: bool> Sync for BasicSpinMutex<T, PAUSE> {}
+
+/// A guard providing access to the data protected by a `BasicSpinMutex`.
+///
+/// The lock is automatically released when this guard is dropped.
+pub struct BasicSpinMutexGuard<'a, T, const PAUSE: bool> {
+    mutex: &'a BasicSpinMutex<T, PAUSE>,
+}
+
+impl<'a, T, const PAUSE: bool> BasicSpinMutexGuard<'a, T, PAUSE> {
+    /// Returns a reference to the protected data.
+    ///
+    /// This method is rarely needed since the guard implements `Deref`.
+    pub fn get(&self) -> &T {
+        unsafe { &*self.mutex.data.get() }
+    }
+
+    /// Returns a mutable reference to the protected data.
+    ///
+    /// This method is rarely needed since the guard implements `DerefMut`.
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> core::ops::Deref for BasicSpinMutexGuard<'a, T, PAUSE> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> core::ops::DerefMut for BasicSpinMutexGuard<'a, T, PAUSE> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T, const PAUSE: bool> Drop for BasicSpinMutexGuard<'a, T, PAUSE> {
+    fn drop(&mut self) {
+        self.mutex.locked.store(false, Ordering::Release);
+    }
+}
+
+/// A type alias for the most commonly used spin mutex configuration.
+///
+/// This is equivalent to `BasicSpinMutex<T, true>`, which enables CPU-specific
+/// pause instructions for efficient busy-waiting.
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// let mutex = SpinMutex::new(42);
+/// let mut guard = mutex.lock();
+/// *guard = 100;
+/// ```
+pub type SpinMutex<T> = BasicSpinMutex<T, true>;
 
 /// A "prong" - the tip of a "fork" - pinning a "task" to a "thread" and "memory" location.
 ///
@@ -83,6 +325,7 @@ extern "C" {
     fn fu_count_colocations() -> usize;
     fn fu_count_numa_nodes() -> usize;
     fn fu_count_quality_levels() -> usize;
+    fn fu_volume_any_pages() -> usize;
 
     // Core thread pool operations
     fn fu_pool_new(name: *const c_char) -> *mut c_void;
@@ -92,6 +335,11 @@ extern "C" {
     fn fu_pool_count_threads(pool: *mut c_void) -> usize;
     fn fu_pool_count_colocations(pool: *mut c_void) -> usize;
     fn fu_pool_count_threads_in(pool: *mut c_void, colocation_index: usize) -> usize;
+    fn fu_pool_locate_thread_in(
+        pool: *mut c_void,
+        global_thread_index: usize,
+        colocation_index: usize,
+    ) -> usize;
 
     #[allow(dead_code)]
     fn fu_pool_for_threads(
@@ -118,6 +366,7 @@ extern "C" {
         context: *mut c_void,
     );
 
+    // Advanced control flow
     fn fu_pool_unsafe_for_threads(
         pool: *mut c_void,
         callback: extern "C" fn(*mut c_void, usize, usize),
@@ -126,6 +375,7 @@ extern "C" {
     fn fu_pool_unsafe_join(pool: *mut c_void);
     fn fu_pool_sleep(pool: *mut c_void, micros: usize);
 
+    // Memory management and NUMA
     fn fu_allocate_at_least(
         numa_node_index: usize,
         minimum_bytes: usize,
@@ -134,7 +384,8 @@ extern "C" {
     ) -> *mut c_void;
     fn fu_allocate(numa_node_index: usize, bytes: usize) -> *mut c_void;
     fn fu_free(numa_node_index: usize, pointer: *mut c_void, bytes: usize);
-    fn fu_volume_huge_pages(numa_node_index: usize) -> usize;
+    fn fu_volume_huge_pages_in(numa_node_index: usize) -> usize;
+    fn fu_volume_any_pages_in(numa_node_index: usize) -> usize;
 
 }
 
@@ -154,6 +405,11 @@ pub fn capabilities_string() -> Option<&'static str> {
 /// Returns a raw pointer to the capabilities string for no_std environments.
 pub fn capabilities_string_ptr() -> *const c_char {
     unsafe { fu_capabilities_string() }
+}
+
+/// Returns the total volume of any pages (huge or regular) available across all NUMA nodes.
+pub fn volume_any_pages() -> usize {
+    unsafe { fu_volume_any_pages() }
 }
 
 /// Returns the number of logical CPU cores available on the system.
@@ -263,24 +519,7 @@ pub fn version() -> (usize, usize, usize) {
 /// });
 /// ```
 ///
-/// For working with data, use the helper functions:
-///
-/// ```rust
-/// use fork_union::*;
-///
-/// let mut pool = spawn(4);
-/// let mut data = vec![0u32; 1000];
-///
-/// // Process each element in parallel
-/// for_each_prong_mut(&mut pool, &mut data, |item, prong| {
-///     *item = prong.task_index as u32 * 2;
-/// });
-///
-/// // Verify results
-/// for (i, &value) in data.iter().enumerate() {
-///     assert_eq!(value, i as u32 * 2);
-/// }
-/// ```
+/// See also helper functions like `for_each_prong_mut` for data processing.
 pub struct ThreadPool {
     inner: *mut c_void,
 }
@@ -414,6 +653,24 @@ impl ThreadPool {
     /// ```
     pub fn count_threads_in(&self, colocation_index: usize) -> usize {
         unsafe { fu_pool_count_threads_in(self.inner, colocation_index) }
+    }
+
+    /// Converts a global thread index to a local thread index within a colocation.
+    ///
+    /// This is useful for distributed thread pools where threads are grouped into
+    /// colocations (NUMA nodes or QoS levels). The local index can be used for
+    /// per-colocation data structures or algorithms.
+    ///
+    /// # Arguments
+    ///
+    /// * `global_thread_index` - The global thread index to convert
+    /// * `colocation_index` - The colocation to get the local index for
+    ///
+    /// # Returns
+    ///
+    /// The local thread index within the specified colocation.
+    pub fn locate_thread_in(&self, global_thread_index: usize, colocation_index: usize) -> usize {
+        unsafe { fu_pool_locate_thread_in(self.inner, global_thread_index, colocation_index) }
     }
 
     /// Transitions worker threads to a power-saving sleep state.
@@ -712,7 +969,7 @@ unsafe impl Sync for AllocationResult {}
 ///
 /// ```rust
 /// use fork_union::*;
-/// let allocator = PinnedAllocator::new(0).expect("Failed to create allocator for NUMA node 0");
+/// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc for NUMA node 0");
 /// let allocation = allocator.allocate(1024).expect("Failed to allocate 1024 bytes");
 ///
 /// // Access the allocated memory
@@ -766,32 +1023,13 @@ impl PinnedAllocator {
     }
 
     /// Returns the volume of huge pages available on this allocator's NUMA node.
-    ///
-    /// This method queries the operating system for the amount of huge page memory
-    /// available for allocation on this NUMA node, which is useful for planning
-    /// large memory allocations.
-    ///
-    /// # Returns
-    ///
-    /// The number of bytes of huge page memory available, or 0 if huge pages
-    /// are not available on this NUMA node.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use fork_union::*;
-    ///
-    /// let allocator = PinnedAllocator::new(0).unwrap();
-    /// let huge_page_volume = allocator.volume_huge_pages();
-    ///
-    /// if huge_page_volume > 0 {
-    ///     println!("NUMA node 0 has {} bytes of huge pages available", huge_page_volume);
-    /// } else {
-    ///     println!("No huge pages available on NUMA node 0");
-    /// }
-    /// ```
     pub fn volume_huge_pages(&self) -> usize {
-        unsafe { fu_volume_huge_pages(self.numa_node) }
+        unsafe { fu_volume_huge_pages_in(self.numa_node) }
+    }
+
+    /// Returns the volume of any pages (huge or regular) available on this allocator's NUMA node.
+    pub fn volume_any_pages(&self) -> usize {
+        unsafe { fu_volume_any_pages_in(self.numa_node) }
     }
 
     /// Allocates memory with at least the requested size on this allocator's NUMA node.
@@ -1001,6 +1239,1281 @@ impl PinnedAllocator {
 pub fn default_numa_allocator() -> Option<PinnedAllocator> {
     PinnedAllocator::new(0)
 }
+
+/// A Vec-like container that uses NUMA-aware pinned memory allocation.
+///
+/// `PinnedVec<T>` provides a dynamic array that allocates memory on a specific
+/// NUMA node, which should correspond to a `colocation_index` for optimal
+/// performance with `ThreadPool`. It automatically manages growth and shrinkage.
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// // Create a vector on NUMA node 0
+/// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+/// let mut vec = PinnedVec::<u64>::new_in(allocator);
+///
+/// // Add elements
+/// vec.push(42).expect("Failed to push");
+/// vec.push(100).expect("Failed to push");
+///
+/// // Access elements
+/// assert_eq!(vec.len(), 2);
+/// assert_eq!(vec[0], 42);
+/// assert_eq!(vec[1], 100);
+///
+/// // Iterate over elements
+/// for (i, &value) in vec.iter().enumerate() {
+///     println!("Element {}: {}", i, value);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct PinnedVec<T> {
+    allocator: PinnedAllocator,
+    allocation: Option<AllocationResult>,
+    len: usize,
+    capacity: usize,
+    _phantom: core::marker::PhantomData<T>,
+}
+
+impl<T> PinnedVec<T> {
+    /// Creates a new empty `PinnedVec` using the specified allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `allocator` - The `PinnedAllocator` to use for memory allocation
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let vec = PinnedVec::<i32>::new_in(allocator);
+    /// assert_eq!(vec.len(), 0);
+    /// assert_eq!(vec.capacity(), 0);
+    /// ```
+    pub fn new_in(allocator: PinnedAllocator) -> Self {
+        Self {
+            allocator,
+            allocation: None,
+            len: 0,
+            capacity: 0,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
+    /// Creates a new `PinnedVec` with the specified capacity using the given allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `allocator` - The `PinnedAllocator` to use for memory allocation
+    /// * `capacity` - The initial capacity to allocate
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let vec = PinnedVec::<i32>::with_capacity_in(allocator, 100).expect("Failed to create vec");
+    /// assert_eq!(vec.len(), 0);
+    /// assert_eq!(vec.capacity(), 100);
+    /// ```
+    pub fn with_capacity_in(allocator: PinnedAllocator, capacity: usize) -> Option<Self> {
+        let mut vec = Self {
+            allocator,
+            allocation: None,
+            len: 0,
+            capacity: 0,
+            _phantom: core::marker::PhantomData,
+        };
+
+        if capacity > 0 {
+            vec.reserve(capacity).ok()?;
+        }
+
+        Some(vec)
+    }
+
+    /// Returns the number of elements in the vector.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the vector contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the number of elements the vector can hold without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Returns the NUMA node this vector's memory is allocated on.
+    pub fn numa_node(&self) -> usize {
+        self.allocator.numa_node()
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// # Arguments
+    ///
+    /// * `additional` - The number of additional elements to reserve space for
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.reserve(10).expect("Failed to reserve");
+    /// assert!(vec.capacity() >= 10);
+    /// ```
+    pub fn reserve(&mut self, additional: usize) -> Result<(), &'static str> {
+        let needed_capacity = self
+            .len
+            .checked_add(additional)
+            .ok_or("Capacity overflow")?;
+        if needed_capacity <= self.capacity {
+            return Ok(());
+        }
+
+        let new_capacity = needed_capacity.max(self.capacity * 2).max(4);
+        self.grow_to(new_capacity)
+    }
+
+    /// Grows the vector to the specified capacity.
+    fn grow_to(&mut self, new_capacity: usize) -> Result<(), &'static str> {
+        if new_capacity <= self.capacity {
+            return Ok(());
+        }
+
+        let new_allocation = self
+            .allocator
+            .allocate_for::<T>(new_capacity)
+            .ok_or("Failed to allocate memory")?;
+
+        if let Some(old_allocation) = self.allocation.take() {
+            // Copy existing elements to new allocation
+            unsafe {
+                let old_ptr = old_allocation.as_ptr() as *const T;
+                let new_ptr = new_allocation.as_ptr() as *mut T;
+                core::ptr::copy_nonoverlapping(old_ptr, new_ptr, self.len);
+            }
+        }
+
+        self.allocation = Some(new_allocation);
+        self.capacity = new_capacity;
+        Ok(())
+    }
+
+    /// Appends an element to the back of the vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The element to append
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// assert_eq!(vec.len(), 1);
+    /// assert_eq!(vec[0], 42);
+    /// ```
+    pub fn push(&mut self, value: T) -> Result<(), &'static str> {
+        if self.len >= self.capacity {
+            self.reserve(1)?;
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr().add(self.len);
+            core::ptr::write(ptr, value);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Removes the last element from the vector and returns it.
+    ///
+    /// # Returns
+    ///
+    /// The last element, or `None` if the vector is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// assert_eq!(vec.pop(), Some(42));
+    /// assert_eq!(vec.pop(), None);
+    /// ```
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        self.len -= 1;
+        unsafe {
+            let ptr = self.as_mut_ptr().add(self.len);
+            Some(core::ptr::read(ptr))
+        }
+    }
+
+    /// Clears the vector, removing all values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::new_in(allocator);
+    /// vec.push(42).expect("Failed to push");
+    /// vec.clear();
+    /// assert_eq!(vec.len(), 0);
+    /// ```
+    pub fn clear(&mut self) {
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            for i in 0..self.len {
+                core::ptr::drop_in_place(ptr.add(i));
+            }
+        }
+        self.len = 0;
+    }
+
+    /// Returns a raw pointer to the vector's buffer.
+    pub fn as_ptr(&self) -> *const T {
+        match &self.allocation {
+            Some(alloc) => alloc.as_ptr() as *const T,
+            None => core::ptr::NonNull::dangling().as_ptr(),
+        }
+    }
+
+    /// Returns a mutable raw pointer to the vector's buffer.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        match &self.allocation {
+            Some(alloc) => alloc.as_ptr() as *mut T,
+            None => core::ptr::NonNull::dangling().as_ptr(),
+        }
+    }
+
+    /// Returns a slice containing the entire vector.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    /// Returns a mutable slice containing the entire vector.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+
+    /// Returns an iterator over the vector.
+    pub fn iter(&self) -> core::slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+
+    /// Returns a mutable iterator over the vector.
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
+    }
+
+    /// Inserts an element at position `index`, shifting all elements after it to the right.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The position to insert at
+    /// * `element` - The element to insert
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index > len`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    pub fn insert(&mut self, index: usize, element: T) -> Result<(), &'static str> {
+        if index > self.len {
+            panic!(
+                "insertion index (is {}) should be <= len (is {})",
+                index, self.len
+            );
+        }
+
+        if self.len >= self.capacity {
+            self.reserve(1)?;
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            core::ptr::copy(ptr.add(index), ptr.add(index + 1), self.len - index);
+            core::ptr::write(ptr.add(index), element);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Removes and returns the element at position `index`, shifting all elements after it to the left.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The position to remove from
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= len`.
+    pub fn remove(&mut self, index: usize) -> T {
+        if index >= self.len {
+            panic!(
+                "removal index (is {}) should be < len (is {})",
+                index, self.len
+            );
+        }
+
+        unsafe {
+            let ptr = self.as_mut_ptr();
+            let result = core::ptr::read(ptr.add(index));
+            core::ptr::copy(ptr.add(index + 1), ptr.add(index), self.len - index - 1);
+            self.len -= 1;
+            result
+        }
+    }
+
+    /// Extend the vector by cloning elements from a slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The slice to copy elements from
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails when growing the vector.
+    pub fn extend_from_slice(&mut self, other: &[T]) -> Result<(), &'static str>
+    where
+        T: Clone,
+    {
+        self.reserve(other.len())?;
+        for item in other {
+            self.push(item.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Returns a reference to an element or subslice depending on the type of index.
+    pub fn get<I>(&self, index: I) -> Option<&<I as core::slice::SliceIndex<[T]>>::Output>
+    where
+        I: core::slice::SliceIndex<[T]>,
+    {
+        self.as_slice().get(index)
+    }
+
+    /// Returns a mutable reference to an element or subslice depending on the type of index.
+    pub fn get_mut<I>(
+        &mut self,
+        index: I,
+    ) -> Option<&mut <I as core::slice::SliceIndex<[T]>>::Output>
+    where
+        I: core::slice::SliceIndex<[T]>,
+    {
+        self.as_mut_slice().get_mut(index)
+    }
+
+    /// Returns a reference to the first element of the vector, or `None` if it is empty.
+    pub fn first(&self) -> Option<&T> {
+        self.as_slice().first()
+    }
+
+    /// Returns a mutable reference to the first element of the vector, or `None` if it is empty.
+    pub fn first_mut(&mut self) -> Option<&mut T> {
+        self.as_mut_slice().first_mut()
+    }
+
+    /// Returns a reference to the last element of the vector, or `None` if it is empty.
+    pub fn last(&self) -> Option<&T> {
+        self.as_slice().last()
+    }
+
+    /// Returns a mutable reference to the last element of the vector, or `None` if it is empty.
+    pub fn last_mut(&mut self) -> Option<&mut T> {
+        self.as_mut_slice().last_mut()
+    }
+
+    /// Swaps two elements in the vector.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.as_mut_slice().swap(a, b)
+    }
+
+    /// Reverses the order of elements in the vector, in place.
+    pub fn reverse(&mut self) {
+        self.as_mut_slice().reverse()
+    }
+
+    /// Returns `true` if the vector contains an element with the given value.
+    pub fn contains(&self, x: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.as_slice().contains(x)
+    }
+
+    /// Shortens the vector, keeping the first `len` elements and dropping the rest.
+    pub fn truncate(&mut self, len: usize) {
+        if len < self.len {
+            unsafe {
+                let ptr = self.as_mut_ptr();
+                for i in len..self.len {
+                    core::ptr::drop_in_place(ptr.add(i));
+                }
+            }
+            self.len = len;
+        }
+    }
+
+    /// Resizes the vector in-place so that `len` is equal to `new_len`.
+    pub fn resize(&mut self, new_len: usize, value: T) -> Result<(), &'static str>
+    where
+        T: Clone,
+    {
+        if new_len > self.len {
+            self.reserve(new_len - self.len)?;
+            while self.len < new_len {
+                self.push(value.clone())?;
+            }
+        } else {
+            self.truncate(new_len);
+        }
+        Ok(())
+    }
+
+    /// Resizes the vector in-place so that `len` is equal to `new_len`.
+    pub fn resize_with<F>(&mut self, new_len: usize, f: F) -> Result<(), &'static str>
+    where
+        F: FnMut() -> T,
+    {
+        if new_len > self.len {
+            self.reserve(new_len - self.len)?;
+            let mut f = f;
+            while self.len < new_len {
+                self.push(f())?;
+            }
+        } else {
+            self.truncate(new_len);
+        }
+        Ok(())
+    }
+
+    /// Fills the vector with copies of the given value.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to fill the vector with
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::with_capacity_in(allocator, 5).expect("Failed to create vec");
+    /// vec.resize(5, 0).expect("Failed to resize");
+    /// vec.fill(42);
+    /// assert_eq!(vec.as_slice(), &[42, 42, 42, 42, 42]);
+    /// ```
+    pub fn fill(&mut self, value: T)
+    where
+        T: Clone,
+    {
+        self.as_mut_slice().fill(value);
+    }
+
+    /// Fills the vector with values generated by calling a closure repeatedly.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A closure that generates values to fill the vector with
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+    /// let mut vec = PinnedVec::<i32>::with_capacity_in(allocator, 5).expect("Failed to create vec");
+    /// vec.resize(5, 0).expect("Failed to resize");
+    /// vec.fill_with(|| 42);
+    /// assert_eq!(vec.as_slice(), &[42, 42, 42, 42, 42]);
+    /// ```
+    pub fn fill_with<F>(&mut self, f: F)
+    where
+        F: FnMut() -> T,
+    {
+        self.as_mut_slice().fill_with(f);
+    }
+}
+
+impl<T> core::ops::Index<usize> for PinnedVec<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<T> core::ops::IndexMut<usize> for PinnedVec<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.as_mut_slice()[index]
+    }
+}
+
+impl<T> Drop for PinnedVec<T> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+unsafe impl<T: Send> Send for PinnedVec<T> {}
+unsafe impl<T: Sync> Sync for PinnedVec<T> {}
+
+/// A NUMA-aware distributed vector that manages an array of `PinnedVec`s,
+/// each pinned to a specific NUMA node. This structure enables data locality
+/// for parallel operations by distributing elements in a round-robin fashion
+/// across NUMA nodes, minimizing cross-node memory access penalties.
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// let mut pool = ThreadPool::try_spawn(4).expect("Failed to create pool");
+/// let mut rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
+///
+/// // Fill all vectors across all NUMA nodes with the same value
+/// rr_vec.fill(42, &mut pool);
+/// ```
+pub struct RoundRobinVec<T> {
+    colocations: PinnedVec<PinnedVec<T>>,
+    total_length: usize,
+    total_capacity: usize,
+}
+
+impl<T> RoundRobinVec<T> {
+    /// Creates a new `RoundRobinVec` with one `PinnedVec` per NUMA node.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if any of the NUMA node allocators fail to create.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
+    /// assert_eq!(rr_vec.colocations_count(), count_colocations());
+    /// ```
+    pub fn new() -> Option<Self> {
+        let colocations_count = count_colocations();
+        if colocations_count == 0 {
+            return None;
+        }
+
+        // Use the first NUMA node to allocate the container
+        let container_allocator = PinnedAllocator::new(0)?;
+        let mut colocations = PinnedVec::with_capacity_in(container_allocator, colocations_count)?;
+
+        // Create a PinnedVec for each NUMA node
+        for colocation_index in 0..colocations_count {
+            let allocator = PinnedAllocator::new(colocation_index)?;
+            let vec = PinnedVec::new_in(allocator);
+            colocations.push(vec).ok()?;
+        }
+
+        let mut total_capacity = 0;
+        for i in 0..colocations.len() {
+            total_capacity += colocations[i].capacity();
+        }
+
+        Some(Self {
+            colocations,
+            total_length: 0,
+            total_capacity,
+        })
+    }
+
+    /// Creates a new `RoundRobinVec` with pre-allocated capacity on each NUMA node.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity_per_node` - The capacity to allocate on each NUMA node
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if any of the NUMA node allocators fail to create or allocate.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
+    ///     .expect("Failed to create RoundRobinVec");
+    ///
+    /// for i in 0..rr_vec.colocations_count() {
+    ///     assert_eq!(rr_vec.capacity_at(i), 1000);
+    /// }
+    /// ```
+    pub fn with_capacity_per_colocation(capacity_per_colocation: usize) -> Option<Self> {
+        let colocations_count = count_colocations();
+        if colocations_count == 0 {
+            return None;
+        }
+
+        // Use the first NUMA node to allocate the container
+        let container_allocator = PinnedAllocator::new(0)?;
+        let mut colocations = PinnedVec::with_capacity_in(container_allocator, colocations_count)?;
+
+        // Create a PinnedVec with capacity for each NUMA node
+        for colocation_index in 0..colocations_count {
+            let allocator = PinnedAllocator::new(colocation_index)?;
+            let vec = PinnedVec::with_capacity_in(allocator, capacity_per_colocation)?;
+            colocations.push(vec).ok()?;
+        }
+
+        let mut total_capacity = 0;
+        for i in 0..colocations.len() {
+            total_capacity += colocations[i].capacity();
+        }
+
+        Some(Self {
+            colocations,
+            total_length: 0,
+            total_capacity,
+        })
+    }
+
+    /// Returns the number of colocations (and thus the number of `PinnedVec`s).
+    pub fn colocations_count(&self) -> usize {
+        self.colocations.len()
+    }
+
+    /// Returns the length of the vector at the specified colocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `colocation_index` - The colocation index
+    ///
+    /// # Returns
+    ///
+    /// The length of the vector at the specified colocation, or 0 if the node doesn't exist.
+    pub fn len_at(&self, colocation_index: usize) -> usize {
+        self.colocations[colocation_index].len()
+    }
+
+    /// Returns the capacity of the vector at the specified colocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `colocation_index` - The colocation index
+    ///
+    /// # Returns
+    ///
+    /// The capacity of the vector at the specified colocation, or 0 if the node doesn't exist.
+    pub fn capacity_at(&self, colocation_index: usize) -> usize {
+        self.colocations[colocation_index].capacity()
+    }
+
+    /// Returns the total length across all NUMA nodes.
+    pub fn len(&self) -> usize {
+        self.total_length
+    }
+
+    /// Returns the total capacity across all NUMA nodes.
+    pub fn capacity(&self) -> usize {
+        self.total_capacity
+    }
+
+    /// Returns `true` if the distributed vector contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.total_length == 0
+    }
+
+    /// Gets a reference to the `PinnedVec` at the specified colocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `colocation_index` - The colocation index
+    ///
+    /// # Returns
+    ///
+    /// A reference to the `PinnedVec` at the specified colocation, or `None` if the node doesn't exist.
+    pub fn get_colocation(&self, colocation_index: usize) -> Option<&PinnedVec<T>> {
+        self.colocations.get(colocation_index)
+    }
+
+    /// Gets a mutable reference to the `PinnedVec` at the specified colocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `colocation_index` - The colocation index
+    ///
+    /// # Returns
+    ///
+    /// A mutable reference to the `PinnedVec` at the specified colocation, or `None` if the node doesn't exist.
+    pub fn get_colocation_mut(&mut self, colocation_index: usize) -> Option<&mut PinnedVec<T>> {
+        self.colocations.get_mut(colocation_index)
+    }
+
+    /// Accesses an element at a global `index` using round-robin distribution.
+    /// The element at global `index` is located at `local_index = index / N`
+    /// in the `PinnedVec` on `numa_node = index % N`, where `N` is the number of NUMA nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The global round-robin index of the element.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the element, or `None` if the index is out of bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
+    /// // Add some elements...
+    /// if let Some(element) = rr_vec.get(5) {
+    ///     println!("Element at index 5: {}", element);
+    /// }
+    /// ```
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if self.colocations.is_empty() {
+            return None;
+        }
+
+        let colocations_count = self.colocations.len();
+        let colocation_index = index % colocations_count;
+        let local_index = index / colocations_count;
+
+        self.colocations.get(colocation_index)?.get(local_index)
+    }
+
+    /// Mutably accesses an element at a global `index` using round-robin distribution.
+    /// The element at global `index` is located at `local_index = index / N`
+    /// in the `PinnedVec` on `numa_node = index % N`, where `N` is the number of NUMA nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The global round-robin index of the element.
+    ///
+    /// # Returns
+    ///
+    /// A mutable reference to the element, or `None` if the index is out of bounds.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if self.colocations.is_empty() {
+            return None;
+        }
+
+        let colocations_count = self.colocations.len();
+        let colocation_index = index % colocations_count;
+        let local_index = index / colocations_count;
+
+        self.colocations
+            .get_mut(colocation_index)?
+            .get_mut(local_index)
+    }
+
+    /// Appends an element to the distributed vector, using round-robin distribution
+    /// to select the target NUMA node based on the current total length.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The element to add.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocation fails on the target NUMA node.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
+    /// rr_vec.push(42).expect("Failed to push");
+    /// assert_eq!(rr_vec.len(), 1);
+    /// ```
+    pub fn push(&mut self, value: T) -> Result<(), &'static str> {
+        if self.colocations.is_empty() {
+            return Err("No NUMA nodes available");
+        }
+
+        // Use round-robin distribution based on current total length
+        let target_colocation = self.total_length % self.colocations.len();
+        let result = self.colocations[target_colocation].push(value);
+
+        if result.is_ok() {
+            self.total_length += 1;
+        }
+
+        result
+    }
+
+    /// Removes and returns the last element from the distributed vector.
+    /// The element is popped from the NUMA node it was last pushed to, maintaining
+    /// round-robin balance.
+    ///
+    /// # Returns
+    ///
+    /// The last element, or `None` if the vector is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut rr_vec = RoundRobinVec::<i32>::new().expect("Failed to create RoundRobinVec");
+    /// rr_vec.push(42).expect("Failed to push");
+    /// assert_eq!(rr_vec.pop(), Some(42));
+    /// assert_eq!(rr_vec.pop(), None);
+    /// ```
+    pub fn pop(&mut self) -> Option<T> {
+        if self.total_length == 0 {
+            return None;
+        }
+
+        // Pop from the last inserted position (reverse round-robin)
+        let target_colocation = (self.total_length - 1) % self.colocations.len();
+        let result = self.colocations[target_colocation].pop();
+
+        if result.is_some() {
+            self.total_length -= 1;
+        }
+
+        result
+    }
+
+    /// Converts a local index within a specific NUMA node to the global round-robin index.
+    ///
+    /// This is useful when you have a reference to an element within a specific `PinnedVec`
+    /// and need to determine its global index in the round-robin distribution.
+    ///
+    /// # Arguments
+    ///
+    /// * `numa_node` - The NUMA node index (0 to numa_count()-1)
+    /// * `local_index` - The local index within that NUMA node's `PinnedVec`
+    ///
+    /// # Returns
+    ///
+    /// The global index where this element would be accessed via `get(global_index)`.
+    pub fn local_to_global_index(&self, colocation_index: usize, local_index: usize) -> usize {
+        local_index * self.colocations_count() + colocation_index
+    }
+
+    /// Converts a global round-robin index to the NUMA node and local index.
+    ///
+    /// This is the inverse of `local_to_global_index`.
+    ///
+    /// # Arguments
+    ///
+    /// * `global_index` - The global index in the round-robin distribution
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (colocation_index, local_index) where the element is stored.
+    pub fn global_to_local_index(&self, global_index: usize) -> (usize, usize) {
+        let colocations_count = self.colocations_count();
+        let colocation_index = global_index % colocations_count;
+        let local_index = global_index / colocations_count;
+        (colocation_index, local_index)
+    }
+
+    /// Fills all vectors across all NUMA nodes with copies of the given value,
+    /// using the thread pool for parallel execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to fill all vectors with
+    /// * `pool` - The thread pool to use for parallel execution
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut pool = ThreadPool::try_spawn(4).expect("Failed to create pool");
+    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
+    ///     .expect("Failed to create RoundRobinVec");
+    ///
+    /// // Resize all vectors to have some elements
+    /// for i in 0..rr_vec.colocations_count() {
+    ///     rr_vec.get_colocation_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
+    /// }
+    ///
+    /// // Fill all vectors with the value 42
+    /// rr_vec.fill(42, &mut pool);
+    /// ```
+    pub fn fill(&mut self, value: T, pool: &mut ThreadPool)
+    where
+        T: Clone + Send + Sync,
+    {
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
+        let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
+
+        pool.for_threads(move |thread_index, colocation_index| {
+            if colocation_index < colocations_count {
+                // Get the specific pinned vector for this NUMA node
+                let node_vec = safe_ptr.get_mut_at(colocation_index);
+                let pool = pool_ptr.get_mut();
+
+                let threads_in_colocation = pool.count_threads_in(colocation_index);
+                let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
+                let split = IndexedSplit::new(node_vec.len(), threads_in_colocation);
+                let range = split.get(thread_local_index);
+
+                // Fill the assigned range of this thread
+                for idx in range {
+                    if let Some(element) = node_vec.get_mut(idx) {
+                        *element = value.clone();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Fills all vectors across all NUMA nodes with values generated by calling
+    /// a closure repeatedly, using the thread pool for parallel execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A closure that generates values to fill the vectors with
+    /// * `pool` - The thread pool to use for parallel execution
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fork_union::*;
+    ///
+    /// let mut pool = ThreadPool::try_spawn(4).expect("Failed to create pool");
+    /// let mut rr_vec = RoundRobinVec::<i32>::with_capacity_per_colocation(1000)
+    ///     .expect("Failed to create RoundRobinVec");
+    ///
+    /// // Resize all vectors to have some elements
+    /// for i in 0..rr_vec.colocations_count() {
+    ///     rr_vec.get_colocation_mut(i).unwrap().resize(100, 0).expect("Failed to resize");
+    /// }
+    ///
+    /// // Fill all vectors with random values
+    /// rr_vec.fill_with(|| rand::random::<i32>(), &mut pool);
+    /// ```
+    pub fn fill_with<F>(&mut self, mut f: F, pool: &mut ThreadPool)
+    where
+        F: FnMut() -> T + Send + Sync,
+        T: Send + Sync,
+    {
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
+        let f_ptr = SafePtr(&mut f as *mut F);
+        let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
+
+        pool.for_threads(move |thread_index, colocation_index| {
+            if colocation_index < colocations_count {
+                // Get the specific pinned vector for this NUMA node
+                let node_vec = safe_ptr.get_mut_at(colocation_index);
+                let f_ref = f_ptr.get_mut();
+                let pool = pool_ptr.get_mut();
+
+                let threads_in_colocation = pool.count_threads_in(colocation_index);
+                let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
+                let split = IndexedSplit::new(node_vec.len(), threads_in_colocation);
+                let range = split.get(thread_local_index);
+
+                // Fill the assigned range of this thread
+                for idx in range {
+                    if let Some(element) = node_vec.get_mut(idx) {
+                        *element = f_ref();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Clears all vectors across all NUMA nodes, using the thread pool for parallel execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - The thread pool to use for parallel execution
+    pub fn clear(&mut self, pool: &mut ThreadPool) {
+        let colocations_count = self.colocations_count();
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
+        let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
+
+        pool.for_threads(move |thread_index, colocation_index| {
+            if colocation_index < colocations_count {
+                // Get the specific pinned vector for this NUMA node
+                let node_vec = safe_ptr.get_mut_at(colocation_index);
+                let pool = pool_ptr.get_mut();
+
+                let threads_in_colocation = pool.count_threads_in(colocation_index);
+                let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
+                let split = IndexedSplit::new(node_vec.len(), threads_in_colocation);
+                let range = split.get(thread_local_index);
+
+                // Drop elements in the assigned range
+                unsafe {
+                    let ptr = node_vec.as_mut_ptr();
+                    for idx in range {
+                        core::ptr::drop_in_place(ptr.add(idx));
+                    }
+                }
+            }
+        });
+
+        // Reset lengths of individual vectors after parallel dropping
+        for i in 0..self.colocations.len() {
+            self.colocations[i].len = 0;
+        }
+        self.total_length = 0;
+    }
+
+    /// Resizes all vectors across all NUMA nodes to the specified length,
+    /// using the thread pool for parallel execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_len` - The new length for all vectors
+    /// * `value` - The value to fill new elements with
+    /// * `pool` - The thread pool to use for parallel execution
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any vector fails to resize.
+    pub fn resize(
+        &mut self,
+        new_len: usize,
+        value: T,
+        pool: &mut ThreadPool,
+    ) -> Result<(), &'static str>
+    where
+        T: Clone + Send + Sync,
+    {
+        let colocations_count = self.colocations_count();
+        if colocations_count == 0 {
+            return Err("No NUMA nodes available");
+        }
+
+        // Calculate how many elements each NUMA node should have
+        let elements_per_node = new_len / colocations_count;
+        let extra_elements = new_len % colocations_count;
+
+        // Step 1: Centrally handle reallocation for each NUMA node
+        for i in 0..colocations_count {
+            let node_len = if i < extra_elements {
+                elements_per_node + 1
+            } else {
+                elements_per_node
+            };
+
+            let current_len = self.colocations[i].len();
+            if node_len > current_len {
+                // Need to reserve more capacity
+                self.colocations[i].reserve(node_len - current_len)?;
+            }
+        }
+
+        // Step 2: Parallel construction/destruction of elements using IndexedSplit
+        let safe_ptr = SafePtr(self.colocations.as_mut_ptr());
+        let pool_ptr = SafePtr(pool as *const ThreadPool as *mut ThreadPool);
+
+        pool.for_threads(move |thread_index, colocation_index| {
+            if colocation_index < colocations_count {
+                // Get the specific pinned vector for this NUMA node
+                let node_vec = safe_ptr.get_mut_at(colocation_index);
+                let pool = pool_ptr.get_mut();
+
+                let node_len = if colocation_index < extra_elements {
+                    elements_per_node + 1
+                } else {
+                    elements_per_node
+                };
+
+                let current_len = node_vec.len();
+                let threads_in_colocation = pool.count_threads_in(colocation_index);
+                let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
+
+                if node_len > current_len {
+                    // Growing: construct new elements in parallel
+                    let new_elements = node_len - current_len;
+                    let split = IndexedSplit::new(new_elements, threads_in_colocation);
+                    let range = split.get(thread_local_index);
+
+                    unsafe {
+                        let ptr = node_vec.as_mut_ptr();
+                        for i in range {
+                            let idx = current_len + i;
+                            core::ptr::write(ptr.add(idx), value.clone());
+                        }
+                    }
+                } else if node_len < current_len {
+                    // Shrinking: drop elements in parallel
+                    let elements_to_drop = current_len - node_len;
+                    let split = IndexedSplit::new(elements_to_drop, threads_in_colocation);
+                    let range = split.get(thread_local_index);
+
+                    unsafe {
+                        let ptr = node_vec.as_mut_ptr();
+                        for i in range {
+                            let idx = node_len + i;
+                            core::ptr::drop_in_place(ptr.add(idx));
+                        }
+                    }
+                }
+            }
+        });
+
+        // Step 3: Update lengths after parallel operations
+        for i in 0..colocations_count {
+            let node_len = if i < extra_elements {
+                elements_per_node + 1
+            } else {
+                elements_per_node
+            };
+            self.colocations[i].len = node_len;
+        }
+
+        self.total_length = new_len;
+        self.total_capacity = self.capacity(); // Recalculate total capacity
+        Ok(())
+    }
+}
+
+/// A thread-safe wrapper for raw pointers used in parallel operations.
+///
+/// # Safety
+/// This wrapper is only safe when used with NUMA-aware thread pools where
+/// each thread accesses different memory locations (different NUMA nodes).
+pub struct SafePtr<T>(*mut T);
+unsafe impl<T> Send for SafePtr<T> {}
+unsafe impl<T> Sync for SafePtr<T> {}
+
+impl<T> SafePtr<T> {
+    /// Creates a new SafePtr from a raw pointer.
+    pub fn new(ptr: *mut T) -> Self {
+        SafePtr(ptr)
+    }
+
+    /// Accesses the element at the given index.
+    pub fn get_mut_at(&self, index: usize) -> &mut T {
+        unsafe { &mut *self.0.add(index) }
+    }
+
+    /// Accesses the element.
+    pub fn get_mut(&self) -> &mut T {
+        unsafe { &mut *self.0 }
+    }
+}
+
+unsafe impl<T: Send> Send for RoundRobinVec<T> {}
+unsafe impl<T: Sync> Sync for RoundRobinVec<T> {}
+
+/// A thread-safe wrapper around raw pointers for sharing read-only data across threads.
+///
+/// This type is designed for scenarios where you need to share immutable data
+/// across async tasks or threads, particularly when the standard borrowing rules
+/// would prevent such sharing. The caller is responsible for ensuring that:
+/// - The pointed-to data remains valid for the lifetime of use
+/// - The data is not modified while being accessed through `SyncConstPtr`
+///
+/// # Safety
+///
+/// This type is marked as `Send + Sync` but requires careful usage:
+/// - Only use with data that won't be modified during the lifetime of the pointer
+/// - Ensure the pointed-to data outlives all uses of the `SyncConstPtr`
+/// - The `get` method is unsafe and requires the caller to ensure bounds checking
+///
+/// # Examples
+///
+/// ```rust
+/// use fork_union::*;
+///
+/// let data = vec![1, 2, 3, 4, 5];
+/// let sync_ptr = SyncConstPtr::new(data.as_ptr());
+///
+/// // Safe to use in async contexts
+/// let value = unsafe { sync_ptr.get(0) };
+/// assert_eq!(*value, 1);
+/// ```
+#[derive(Copy, Clone, Debug)]
+pub struct SyncConstPtr<T> {
+    ptr: *const T,
+}
+
+impl<T> SyncConstPtr<T> {
+    /// Creates a new `SyncConstPtr` from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - The pointer is valid for the intended usage duration
+    /// - The pointed-to data will not be modified during use
+    /// - The pointer is properly aligned for type `T`
+    pub fn new(ptr: *const T) -> Self {
+        Self { ptr }
+    }
+
+    /// Gets a reference to the element at the given index.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - The index is within bounds of the allocated data
+    /// - The data at the index is properly initialized
+    /// - The data remains valid for the lifetime of the returned reference
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The index of the element to access
+    ///
+    /// # Returns
+    ///
+    /// A reference to the element at the given index.
+    pub unsafe fn get(&self, index: usize) -> &T {
+        &*self.ptr.add(index)
+    }
+
+    /// Returns the raw pointer.
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+}
+
+unsafe impl<T> Send for SyncConstPtr<T> {}
+unsafe impl<T> Sync for SyncConstPtr<T> {}
 
 /// Operation object for parallel thread execution with explicit broadcast/join control.
 pub struct ForThreadsOperation<'a, F>
@@ -1259,6 +2772,46 @@ where
     });
 }
 
+/// Splits a range of tasks into fair-sized chunks for parallel distribution.
+///
+/// The first `(tasks % threads)` chunks have size `ceil(tasks / threads)`.
+/// The remaining chunks have size `floor(tasks / threads)`.
+///
+/// This ensures optimal load balancing across threads with minimal size variance.
+/// See: https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/
+#[derive(Debug, Clone)]
+pub struct IndexedSplit {
+    quotient: usize,
+    remainder: usize,
+}
+
+impl IndexedSplit {
+    /// Creates a new indexed split for distributing tasks across threads.
+    ///
+    /// # Arguments
+    ///
+    /// * `tasks_count` - Total number of tasks to distribute
+    /// * `threads_count` - Number of threads to distribute across (must be > 0)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `threads_count` is zero.
+    pub fn new(tasks_count: usize, threads_count: usize) -> Self {
+        assert!(threads_count > 0, "Threads count must be greater than zero");
+        Self {
+            quotient: tasks_count / threads_count,
+            remainder: tasks_count % threads_count,
+        }
+    }
+
+    /// Returns the range for a specific thread index.
+    pub fn get(&self, thread_index: usize) -> core::ops::Range<usize> {
+        let begin = self.quotient * thread_index + thread_index.min(self.remainder);
+        let count = self.quotient + if thread_index < self.remainder { 1 } else { 0 };
+        begin..(begin + count)
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "std")]
 mod tests {
@@ -1480,7 +3033,7 @@ mod tests {
 
     #[test]
     fn test_basic_allocation() {
-        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator
             .allocate(1024)
             .expect("Failed to allocate 1024 bytes");
@@ -1495,7 +3048,7 @@ mod tests {
 
     #[test]
     fn test_allocate_zero_bytes() {
-        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator.allocate(0);
         assert!(
             allocation.is_none(),
@@ -1505,7 +3058,7 @@ mod tests {
 
     #[test]
     fn test_allocate_at_least() {
-        let allocator = PinnedAllocator::new(0).expect("Failed to create allocator");
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator
             .allocate_at_least(1000)
             .expect("Failed to allocate at least 1000 bytes");
@@ -1517,5 +3070,260 @@ mod tests {
         if allocation.bytes_per_page() > 0 {
             assert!(allocation.bytes_per_page() >= 512); // Reasonable minimum page size
         }
+    }
+
+    #[test]
+    fn test_pinned_vec_creation() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let vec = PinnedVec::<i32>::new_in(allocator);
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.capacity(), 0);
+        assert_eq!(vec.numa_node(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_with_capacity() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let vec = PinnedVec::<i32>::with_capacity_in(allocator, 10).expect("Failed to create vec");
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.capacity(), 10);
+        assert_eq!(vec.numa_node(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_push_pop() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+
+        // Test push
+        vec.push(42).expect("Failed to push");
+        assert_eq!(vec.len(), 1);
+        assert!(!vec.is_empty());
+        assert_eq!(vec[0], 42);
+
+        vec.push(100).expect("Failed to push");
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[1], 100);
+
+        // Test pop
+        assert_eq!(vec.pop(), Some(100));
+        assert_eq!(vec.len(), 1);
+        assert_eq!(vec.pop(), Some(42));
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.pop(), None);
+    }
+
+    #[test]
+    fn test_pinned_vec_indexing() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(10).expect("Failed to push");
+        vec.push(20).expect("Failed to push");
+        vec.push(30).expect("Failed to push");
+
+        // Test indexing
+        assert_eq!(vec[0], 10);
+        assert_eq!(vec[1], 20);
+        assert_eq!(vec[2], 30);
+
+        // Test mutable indexing
+        vec[1] = 25;
+        assert_eq!(vec[1], 25);
+    }
+
+    #[test]
+    fn test_pinned_vec_clear() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(1).expect("Failed to push");
+        vec.push(2).expect("Failed to push");
+        vec.push(3).expect("Failed to push");
+
+        assert_eq!(vec.len(), 3);
+        vec.clear();
+        assert_eq!(vec.len(), 0);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_pinned_vec_insert_remove() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        vec.push(1).expect("Failed to push");
+        vec.push(3).expect("Failed to push");
+
+        // Insert in the middle
+        vec.insert(1, 2).expect("Failed to insert");
+        assert_eq!(vec.len(), 3);
+        assert_eq!(vec[0], 1);
+        assert_eq!(vec[1], 2);
+        assert_eq!(vec[2], 3);
+
+        // Remove from the middle
+        let removed = vec.remove(1);
+        assert_eq!(removed, 2);
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[0], 1);
+        assert_eq!(vec[1], 3);
+    }
+
+    #[test]
+    fn test_pinned_vec_reserve() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        assert_eq!(vec.capacity(), 0);
+
+        vec.reserve(10).expect("Failed to reserve");
+        assert!(vec.capacity() >= 10);
+        assert_eq!(vec.len(), 0);
+
+        // Adding elements shouldn't require new allocation
+        for i in 0..10 {
+            vec.push(i).expect("Failed to push");
+        }
+        assert_eq!(vec.len(), 10);
+    }
+
+    #[test]
+    fn test_pinned_vec_extend_from_slice() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        let data = [1, 2, 3, 4, 5];
+
+        vec.extend_from_slice(&data).expect("Failed to extend");
+        assert_eq!(vec.len(), 5);
+        for (i, &value) in data.iter().enumerate() {
+            assert_eq!(vec[i], value);
+        }
+    }
+
+    #[test]
+    fn test_pinned_vec_iterators() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        for i in 0..5 {
+            vec.push(i).expect("Failed to push");
+        }
+
+        // Test immutable iterator
+        let collected: Vec<i32> = vec.iter().copied().collect();
+        let expected = Vec::from([0, 1, 2, 3, 4]);
+        assert_eq!(collected, expected);
+
+        // Test mutable iterator
+        for value in vec.iter_mut() {
+            *value *= 2;
+        }
+        assert_eq!(vec[0], 0);
+        assert_eq!(vec[1], 2);
+        assert_eq!(vec[2], 4);
+        assert_eq!(vec[3], 6);
+        assert_eq!(vec[4], 8);
+    }
+
+    #[test]
+    fn test_pinned_vec_slices() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+        for i in 0..5 {
+            vec.push(i).expect("Failed to push");
+        }
+
+        // Test as_slice
+        let slice = vec.as_slice();
+        assert_eq!(slice.len(), 5);
+        assert_eq!(slice[2], 2);
+
+        // Test as_mut_slice
+        let mut_slice = vec.as_mut_slice();
+        mut_slice[2] = 99;
+        assert_eq!(vec[2], 99);
+    }
+
+    #[test]
+    fn test_pinned_vec_growth() {
+        let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
+        let mut vec = PinnedVec::<i32>::new_in(allocator);
+
+        // Push many elements to test growth
+        for i in 0..100 {
+            vec.push(i).expect("Failed to push");
+        }
+
+        assert_eq!(vec.len(), 100);
+        for i in 0..100 {
+            assert_eq!(vec[i], i as i32);
+        }
+    }
+
+    #[test]
+    fn test_pinned_vec_invalid_numa_node() {
+        let numa_count = count_numa_nodes();
+        let allocator = PinnedAllocator::new(numa_count + 1);
+        assert!(allocator.is_none());
+    }
+
+    #[test]
+    fn test_sync_const_ptr() {
+        let data = Vec::from([1, 2, 3, 4, 5]);
+        let sync_ptr = SyncConstPtr::new(data.as_ptr());
+
+        unsafe {
+            assert_eq!(*sync_ptr.get(0), 1);
+            assert_eq!(*sync_ptr.get(2), 3);
+            assert_eq!(*sync_ptr.get(4), 5);
+        }
+
+        assert_eq!(sync_ptr.as_ptr(), data.as_ptr());
+    }
+
+    #[test]
+    fn test_sync_const_ptr_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<SyncConstPtr<i32>>();
+        assert_sync::<SyncConstPtr<i32>>();
+    }
+
+    #[test]
+    fn test_pinned_vec_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<PinnedVec<i32>>();
+        assert_sync::<PinnedVec<i32>>();
+    }
+
+    #[test]
+    fn test_indexed_split() {
+        // Test basic split
+        let split = IndexedSplit::new(10, 3);
+        assert_eq!(split.get(0), 0..4); // `ceil(10/3)` = 4
+        assert_eq!(split.get(1), 4..7); // `floor(10/3)` = 3
+        assert_eq!(split.get(2), 7..10); // `floor(10/3)` = 3
+
+        // Test even split
+        let split = IndexedSplit::new(12, 3);
+        assert_eq!(split.get(0), 0..4);
+        assert_eq!(split.get(1), 4..8);
+        assert_eq!(split.get(2), 8..12);
+
+        // Test edge cases
+        let split = IndexedSplit::new(0, 2);
+        assert_eq!(split.get(0), 0..0);
+        assert_eq!(split.get(1), 0..0);
+
+        let split = IndexedSplit::new(1, 2);
+        assert_eq!(split.get(0), 0..1);
+        assert_eq!(split.get(1), 1..1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Threads count must be greater than zero")]
+    fn test_indexed_split_zero_threads() {
+        IndexedSplit::new(10, 0);
     }
 }

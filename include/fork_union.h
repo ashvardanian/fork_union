@@ -153,7 +153,6 @@ typedef enum fu_caller_exclusivity_t {
  *  @retval "numa+x86_tpause" for the NUMA-aware pool with `tpause` instruction with "waitpkg" CPU feature.
  *  @retval "numa+arm64_wfet" for the NUMA-aware pool with `wfet` instruction on AArch64.
  *  @retval "numa+risc5_pause" for the NUMA-aware pool with `pause` instruction on RISC-V.
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  The string describes both the memory topology awareness and the CPU-specific optimizations
  *  available for busy-waiting. These capabilities directly affect performance characteristics:
@@ -167,7 +166,6 @@ char const *fu_capabilities_string(void);
  *  @brief Describes the number of logical CPU cores available on the system.
  *  @retval 0 if the thread pool is not supported on the current platform or detection failed.
  *  @retval 1-N where N is the number of logical cores detected by the OS.
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  On x86 systems with hyper-threading enabled, this will be 2x the number of physical cores.
  *  On ARM big.LITTLE architectures, this includes both performance and efficiency cores.
@@ -186,7 +184,6 @@ size_t fu_count_logical_cores(void);
  *  @retval 1 on most desktop, laptop, or IoT platforms with unified memory.
  *  @retval 2-8 on typical dual-socket servers or heterogeneous mobile chips.
  *  @retval 4-32 is a typical range on high-end cloud servers with multiple sockets.
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  A "colocation" represents a group of threads that share the same:
  *  - NUMA memory domain (fast local memory access)
@@ -205,7 +202,6 @@ size_t fu_count_colocations(void);
  *  @retval 1 on systems with uniform memory access (UMA).
  *  @retval 2-8 on typical multi-socket servers.
  *  @retval 8+ on high-end systems with complex topologies.
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  NUMA nodes represent distinct memory domains with different access latencies.
  *  Memory allocated on the local NUMA node is typically 2-3x faster to access
@@ -220,7 +216,6 @@ size_t fu_count_numa_nodes(void);
  *  @retval 0 if QoS detection is not supported.
  *  @retval 1 on systems with homogeneous cores.
  *  @retval 2-3 on systems with heterogeneous cores (e.g., ARM big.LITTLE, Intel P+E cores).
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  Different QoS levels may have vastly different performance characteristics.
  *  Consider creating separate thread pools for different workload types.
@@ -228,11 +223,29 @@ size_t fu_count_numa_nodes(void);
 size_t fu_count_quality_levels(void);
 
 /**
+ *  @brief Returns the total volume of any pages (huge or regular) available across all NUMA nodes.
+ *  @retval Number of bytes of memory pages available across all NUMA nodes.
+ */
+size_t fu_volume_any_pages(void);
+
+/**
+ *  @brief Returns the volume of any pages (huge or regular) available on the specified NUMA node.
+ *  @param[in] numa_node_index The index of the NUMA node to query, in [0, numa_nodes_count).
+ *  @retval 0 if the NUMA node index is invalid or if no memory is available.
+ *  @retval Number of bytes of memory pages available on the specified NUMA node.
+ *
+ *  This function queries the operating system for the total amount of memory pages
+ *  (both huge pages and regular pages) available for allocation on the specified NUMA node.
+ *  This is useful for determining how much memory can be allocated for vector storage
+ *  based on a percentage of available memory.
+ */
+size_t fu_volume_any_pages_in(size_t numa_node_index);
+
+/**
  *  @brief Describes the number of different huge page sizes supported.
  *  @param[in] numa_node_index The index of the NUMA node to allocate memory on, in [0, numa_nodes_count).
  *  @retval 0 if huge pages are not supported or not available.
  *  @retval 1-4 on systems with huge page support (typically 2MB, 1GB sizes).
- *  @note This API is @b not synchronized and should be called once during initialization.
  *
  *  Huge pages reduce TLB (Translation Lookaside Buffer) pressure by using larger
  *  page sizes than the standard 4KB. This can significantly improve performance
@@ -244,7 +257,7 @@ size_t fu_count_quality_levels(void);
  *  - 16KB/64KB: Base page sizes on some ARM configurations
  *  @sa `fu_allocate_at_least` for NUMA-aware allocation with huge page support.
  */
-size_t fu_volume_huge_pages(size_t numa_node_index);
+size_t fu_volume_huge_pages_in(size_t numa_node_index);
 
 #pragma endregion - Metadata
 
@@ -466,6 +479,15 @@ size_t fu_pool_count_threads(fu_pool_t *pool);
  *  @sa `fu_pool_count_colocations` for valid colocation indices.
  */
 size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index);
+
+/**
+ *  @brief Converts a global thread index to a local thread index within a colocation.
+ *  @param[in] pool Thread pool handle, must not be NULL.
+ *  @param[in] global_thread_index The global thread index to convert.
+ *  @param[in] colocation_index Index of the colocation, must be < `fu_pool_count_colocations(pool)`.
+ *  @retval Local thread index within the specified colocation.
+ */
+size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index);
 
 #pragma endregion - Lifetime
 

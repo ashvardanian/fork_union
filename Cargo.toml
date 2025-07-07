@@ -12,7 +12,7 @@ name = "fork_union"
 path = "rust/lib.rs"
 
 [build-dependencies]
-cc = "1.2.27"
+cc = "1.2.29"
 
 [features]
 default = ["std"]
@@ -30,7 +30,14 @@ path = "scripts/nbody.rs"
 test = false
 bench = false
 
+[[example]]
+name = "search"
+path = "scripts/search.rs"
+test = false
+bench = false
+
 [dev-dependencies]
 rayon = "1.10"
 rand = "0.9"
-tokio = { version = "1.45", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1.46.1", features = ["rt-multi-thread", "sync"] }
+simsimd = "6.5.0"

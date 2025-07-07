@@ -3,6 +3,7 @@
                 "ashvardanian",
                 "cntfrq",
                 "cntvct",
+                "codegen",
                 "colocations",
                 "combinators",
                 "Condvar",
@@ -35,6 +36,7 @@
                 "topo",
                 "TSAN",
                 "Vardanian",
+                "vecs",
                 "WFET"
         ],
         "files.associations": {

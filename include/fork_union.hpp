@@ -97,10 +97,24 @@
 #include <numa.h>       // `numa_available`, `numa_node_of_cpu`, `numa_alloc_onnode`
 #include <numaif.h>     // `mbind` manual assignment of `mmap` pages
 #include <pthread.h>    // `pthread_getaffinity_np`
-#include <unistd.h>     // `gettid`
 #include <sys/mman.h>   // `mmap`, `MAP_PRIVATE`, `MAP_ANONYMOUS`
 #include <linux/mman.h> // `MAP_HUGE_2MB`, `MAP_HUGE_1GB`
 #include <dirent.h>     // `opendir`, `readdir`, `closedir`
+#endif
+
+#if defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
+#include <unistd.h> // `gettid`, `sysconf`
+#endif
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h> // `sysctl`
+#endif
+
+#if defined(_WIN32)
+#define NOMINMAX                // Disable `max` macros conflicting with STL symbols
+#define _CRT_SECURE_NO_WARNINGS // Disable "This function or variable may be unsafe" warnings
+#include <windows.h>            // `GlobalMemoryStatusEx`
+#include <io.h>                 // `_isatty`, `_fileno`
 #endif
 
 /**
@@ -142,6 +156,12 @@
 #define _FU_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
 #define _FU_UNLIKELY(x) (x)
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define _FU_WITH_ASM_YIELDS 1
+#else
+#define _FU_WITH_ASM_YIELDS 0
 #endif
 
 /*  Detect target CPU architecture.
@@ -1398,7 +1418,7 @@ concept is_unsafe_pool =   //
 
 #pragma region - Hardware Friendly Yield
 
-#if defined(__GNUC__) || defined(__clang__) // We need inline assembly support
+#if _FU_WITH_ASM_YIELDS // We need inline assembly support
 
 #if _FU_DETECT_ARCH_ARM64
 
@@ -1412,6 +1432,12 @@ struct arm64_yield_t {
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
  */
+#pragma GCC push_options
+#pragma GCC target("arch=armv8-a+wfxt")
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
+#endif
+
 struct arm64_wfet_t {
     inline void operator()() const noexcept {
         std::uint64_t cntfrq_el0, cntvct_el0;
@@ -1422,10 +1448,25 @@ struct arm64_wfet_t {
         // Fetch current counter value and build the deadline
         __asm__ __volatile__("mrs %0, CNTVCT_EL0" : "=r"(cntvct_el0));
         std::uint64_t const deadline = cntvct_el0 + ticks_per_us;
-        // Enter timed wait: WFET <Xt>.
-        __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
+        // We want to enter a timed wait as `WFET <Xt>`, but Clang 15 doesn't recognize it yet.
+        //
+        //      __asm__ __volatile__("wfet %x0\n\t" : : "r"(deadline) : "memory", "cc");
+        //
+        // So instead, we can encode the instruction manually as `D50320XX`,
+        // where XX encodes the lower bits of Xt - the deadline register number.
+        __asm__ __volatile__(    //
+            "mov x0, %0\n"       // move the deadline to x0
+            ".inst 0xD5032000\n" // wfet x0
+            :
+            : "r"(deadline)
+            : "x0", "memory", "cc");
     }
 };
+
+#pragma GCC pop_options
+#if defined(__clang__)
+#pragma clang attribute pop
+#endif
 
 #endif // _FU_DETECT_ARCH_ARM64
 
@@ -1437,7 +1478,9 @@ struct x86_pause_t {
 
 #pragma GCC push_options
 #pragma GCC target("waitpkg")
-#pragma clang attribute push(__waitpkg__)
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("waitpkg"))), apply_to = function)
+#endif
 
 /**
  *  @brief On x86 uses the `TPAUSE` instruction to yield for 1 microsecond if `WAITPKG` is supported.
@@ -1476,7 +1519,9 @@ struct x86_tpause_t {
 };
 
 #pragma GCC pop_options
+#if defined(__clang__)
 #pragma clang attribute pop
+#endif
 
 #endif // _FU_DETECT_ARCH_X86_64
 
@@ -1502,6 +1547,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     // Check for basic PAUSE instruction support (always available on x86-64)
     caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
 
+#if _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
     std::uint32_t eax, ebx, ecx, edx;
 
@@ -1511,19 +1557,28 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WAITPKG is bit 5 in ECX
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+#endif
 
 #elif _FU_DETECT_ARCH_ARM64
 
     // Basic YIELD is always available on AArch64
     caps = static_cast<capabilities_t>(caps | capability_arm64_yield_k);
 
-    // Check for WFET support via ID_AA64ISAR2_EL1 register
-    std::uint64_t id_aa64isar2_el0;
+    // Use sysctl to check for WFET support on Apple platforms
+#if defined(__APPLE__)
+    int wfet_support = 0;
+    size_t size = sizeof(wfet_support);
+    if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
+        caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
+#elif _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
+    // On non-Apple ARM systems, try to read the system register
+    // Note: This may fail on some systems where userspace access is restricted
+    std::uint64_t id_aa64isar2_el0 = 0;
     __asm__ __volatile__("mrs %0, ID_AA64ISAR2_EL0" : "=r"(id_aa64isar2_el0) : : "memory");
-
     // WFET is bits [3:0], value 2 indicates WFET support
     std::uint64_t const wfet_field = id_aa64isar2_el0 & 0xF;
     if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
+#endif
 
 #elif _FU_DETECT_ARCH_RISC5
 
@@ -1625,10 +1680,58 @@ static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept 
 static std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
     return ::numa_pagesize();
-    // #elif defined(__unix__) || defined(__APPLE__)
-    //     return ::sysconf(_SC_PAGESIZE);
+#elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
+    return ::sysconf(_SC_PAGESIZE);
 #else
     return 4096;
+#endif
+}
+
+/**
+ *  @brief Fetches the total RAM amount available on the system in bytes.
+ *  @retval Total system RAM in bytes, or 0 if detection fails.
+ *  @note This function provides cross-platform detection of total physical memory.
+ */
+static std::size_t get_ram_total_volume() noexcept {
+#if defined(__linux__)
+    // On Linux, read from /proc/meminfo
+    FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
+    if (!meminfo_file) return 0;
+
+    char line[256];
+    while (::fgets(line, sizeof(line), meminfo_file)) {
+        if (::strncmp(line, "MemTotal:", 9) == 0) {
+            std::size_t memory_kb = 0;
+            if (::sscanf(line, "MemTotal: %zu kB", &memory_kb) == 1) {
+                ::fclose(meminfo_file);
+                return memory_kb * 1024; // Convert kB to bytes
+            }
+        }
+    }
+    ::fclose(meminfo_file);
+    return 0;
+#elif defined(__APPLE__)
+    // On macOS, use sysctl
+    int mib[2] = {CTL_HW, HW_MEMSIZE};
+    std::uint64_t memory_bytes = 0;
+    std::size_t size = sizeof(memory_bytes);
+    if (::sysctl(mib, 2, &memory_bytes, &size, nullptr, 0) == 0) return static_cast<std::size_t>(memory_bytes);
+    return 0;
+#elif defined(_WIN32)
+    // On Windows, use GlobalMemoryStatusEx
+    MEMORYSTATUSEX mem_status;
+    mem_status.dwLength = sizeof(mem_status);
+    if (::GlobalMemoryStatusEx(&mem_status)) return static_cast<std::size_t>(mem_status.ullTotalPhys);
+    return 0;
+#elif defined(__unix__) || defined(__unix) || defined(unix)
+    // On other Unix systems, try sysconf
+    long pages = ::sysconf(_SC_PHYS_PAGES);
+    long page_size = ::sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page_size > 0) return static_cast<std::size_t>(pages) * static_cast<std::size_t>(page_size);
+    return 0;
+#else
+    // Fallback: return 0 if platform is not supported
+    return 0;
 #endif
 }
 
@@ -1664,6 +1767,7 @@ class ram_page_settings {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
     std::array<ram_page_setting_t, max_page_sizes_k> sizes_ {0}; // ? Huge page sizes in bytes
     std::size_t count_sizes_ {0};                                // ? Number of supported huge page sizes
+    std::size_t total_memory_bytes_ {0};                         // ? Total memory available on this NUMA node
   public:
     /**
      *  @brief Finds the largest Huge Pages size available for the given NUMA node.
@@ -1759,6 +1863,29 @@ class ram_page_settings {
             ++count_sizes;
         }
         ::closedir(hugepages_dir);
+
+        // Read total memory for this NUMA node from meminfo
+        char meminfo_path[256];
+        path_result =
+            std::snprintf(meminfo_path, sizeof(meminfo_path), "/sys/devices/system/node/node%d/meminfo", node_id);
+        if (path_result > 0 && static_cast<std::size_t>(path_result) < sizeof(meminfo_path)) {
+            FILE *meminfo_file = ::fopen(meminfo_path, "r");
+            if (meminfo_file) {
+                char line[256];
+                while (::fgets(line, sizeof(line), meminfo_file)) {
+                    if (::strncmp(line, "Node ", 5) == 0 && ::strstr(line, " MemTotal:")) {
+                        // Parse line like "Node 0 MemTotal:    32768000 kB"
+                        std::size_t memory_kb = 0;
+                        if (::sscanf(line, "Node %*d MemTotal: %zu kB", &memory_kb) == 1) {
+                            total_memory_bytes_ = memory_kb * 1024; // Convert kB to bytes
+                            break;
+                        }
+                    }
+                }
+                ::fclose(meminfo_file);
+            }
+        }
+
         count_sizes_ = count_sizes;
         return true;
 #else
@@ -1767,6 +1894,7 @@ class ram_page_settings {
     }
 
     std::size_t size() const noexcept { return count_sizes_; }
+    std::size_t total_memory_bytes() const noexcept { return total_memory_bytes_; }
     ram_page_setting_t const *begin() const noexcept { return sizes_.data(); }
     ram_page_setting_t const *end() const noexcept { return sizes_.data() + count_sizes_; }
     ram_page_setting_t const &operator[](std::size_t const index) const noexcept {
@@ -3494,26 +3622,18 @@ struct logging_colors_t {
 
     explicit logging_colors_t(bool use_colors) noexcept : use_colors_(use_colors) {}
 
-#if FU_ENABLE_NUMA
-    explicit logging_colors_t(int file_descriptor = STDOUT_FILENO) noexcept {
-        if (!::isatty(file_descriptor)) return;
-
-        char const *term = std::getenv("TERM");
-        if (!term) return;
-
-        use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
-                      std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
-    }
-#else
     explicit logging_colors_t() noexcept {
+#if defined(_WIN32)
+        if (!::_isatty(_fileno(stdout))) return;
+#endif
+#if defined(__unix__) || defined(__APPLE__)
+        if (!::isatty(STDOUT_FILENO)) return;
+#endif
         char const *term = std::getenv("TERM");
         if (!term) return;
-
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
     }
-
-#endif
 
     /* ANSI style codes */
     char const *reset() { return use_colors_ ? "\033[0m" : ""; }
@@ -3766,7 +3886,7 @@ struct log_capabilities_t {
 
         // CPU Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s├─ %sCPU:%s ", colors.dim(), colors.cyan(), colors.reset());
-        int pos = std::strlen(line_buffer);
+        int pos = static_cast<int>(std::strlen(line_buffer));
 
         bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
@@ -3805,7 +3925,7 @@ struct log_capabilities_t {
 
         // Memory Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s└─ %sRAM:%s ", colors.dim(), colors.cyan(), colors.reset());
-        pos = std::strlen(line_buffer);
+        pos = static_cast<int>(std::strlen(line_buffer));
 
         bool first_mem = true;
         if (caps & capability_numa_aware_k) {

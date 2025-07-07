@@ -1,6 +1,6 @@
 # Fork Union 🍴
 
-"Fork Union" is the low(est?)-latency [OpenMP](https://en.wikipedia.org/wiki/OpenMP)-style [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access)-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding ❌ [mutexes & system calls](#locks-and-mutexes), ❌ [dynamic memory allocations](#memory-allocations), ❌ [CAS-primitives](#atomics-and-cas), and ❌ [false-sharing](#) of CPU cache-lines on the hot path 🍴
+"Fork Union" is the low(est?)-latency [OpenMP](https://en.wikipedia.org/wiki/OpenMP)-style [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access)-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#) of CPU cache-lines on the hot path 🍴
 
 ![`fork_union` banner](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/fork_union.jpg?raw=true)
 
@@ -11,7 +11,7 @@ Short of OpenMP, practically every other solution has high dispatch latency and 
 OpenMP, however, is not ideal for fine-grained parallelism and is less portable than the C++ and Rust standard libraries.
 
 This is where __`fork_union`__ comes in.
-It's a C++ 11 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
+It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
 It supports pinning nodes to specific NUMA nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
 
 ## Basic Usage
