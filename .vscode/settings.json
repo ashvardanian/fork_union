@@ -35,6 +35,7 @@
                 "topo",
                 "TSAN",
                 "Vardanian",
+                "vecs",
                 "WFET"
         ],
         "files.associations": {
