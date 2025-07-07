@@ -54,8 +54,10 @@ foreach (STD IN LISTS CXX_STANDARDS)
     add_test(NAME ${TGT} COMMAND ${TGT})
     set_target_properties_for_fork_union_script(${TGT})
 
-    # Link against libatomic for older GCC versions that might need it
-    if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # Link against `libatomic` for older GCC versions that might need it
+    # Note: AppleClang doesn't need `libatomic` as atomic operations are built-in
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR 
+        (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
         target_link_libraries(${TGT} PRIVATE -latomic)
     endif ()
 
