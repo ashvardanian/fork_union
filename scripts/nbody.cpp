@@ -60,9 +60,9 @@ namespace fu = ashvardanian::fork_union;
 
 #pragma region - Shared Logic
 
-static constexpr float g_const = 6.674e-11;
-static constexpr float dt_const = 0.01;
-static constexpr float softening_const = 1e-9;
+static constexpr float g_const = 6.674e-11f;
+static constexpr float dt_const = 0.01f;
+static constexpr float softening_const = 1e-9f;
 
 struct vector3_t {
     float x, y, z;

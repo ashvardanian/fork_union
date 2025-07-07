@@ -59,7 +59,8 @@ bool test_coprime_permutation() noexcept {
 
                 // Create a coprime permutation and make sure it only covers the range [start, end)
                 index_type_ const range_size = static_cast<index_type_>(end - start);
-                fu::coprime_permutation_range<index_type_> permutation(start, range_size, seed);
+                fu::coprime_permutation_range<index_type_> permutation(static_cast<index_type_>(start), range_size,
+                                                                       static_cast<index_type_>(seed));
 
                 std::size_t count_matches = 0;
                 for (auto value : permutation) {
@@ -390,12 +391,12 @@ static bool stress_test_composite(std::size_t const threads_count,
     using prong_t = fu::prong<index_t>;
 
     pool_t pool;
-    if (!pool.try_spawn(threads_count)) return false;
+    if (!pool.try_spawn(static_cast<index_t>(threads_count))) return false;
 
     // Make sure that no overflow happens in the static scheduling
     std::atomic<std::size_t> counter(0);
     std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
-    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
+    pool.for_n(static_cast<index_t>(default_parallel_tasks_k), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
@@ -405,7 +406,7 @@ static bool stress_test_composite(std::size_t const threads_count,
 
     // Make sure that no overflow happens in the dynamic scheduling
     counter = 0;
-    pool.for_n_dynamic(default_parallel_tasks_k, [&](prong_t prong) noexcept {
+    pool.for_n_dynamic(static_cast<index_t>(default_parallel_tasks_k), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
