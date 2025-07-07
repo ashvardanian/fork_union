@@ -1448,7 +1448,9 @@ struct x86_pause_t {
 
 #pragma GCC push_options
 #pragma GCC target("waitpkg")
-#pragma clang attribute push(__waitpkg__)
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("waitpkg"))), apply_to = function)
+#endif
 
 /**
  *  @brief On x86 uses the `TPAUSE` instruction to yield for 1 microsecond if `WAITPKG` is supported.
@@ -1487,7 +1489,9 @@ struct x86_tpause_t {
 };
 
 #pragma GCC pop_options
+#if defined(__clang__)
 #pragma clang attribute pop
+#endif
 
 #endif // _FU_DETECT_ARCH_X86_64
 
