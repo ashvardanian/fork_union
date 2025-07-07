@@ -421,7 +421,7 @@ static bool stress_test_composite(std::size_t const threads_count,
  *  @brief Enhanced NUMA topology logging function using the logger class.
  */
 void log_numa_topology() noexcept {
-    fu::logging_colors_t colors(STDOUT_FILENO);
+    fu::logging_colors_t colors;
 #if FU_ENABLE_NUMA
     // Harvest topology
     if (!numa_topology.try_harvest()) {

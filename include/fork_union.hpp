@@ -113,6 +113,7 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h> // `GlobalMemoryStatusEx`
+#include <io.h>      // `_isatty`, `_fileno`
 #undef NOMINMAX
 #endif
 
@@ -3613,7 +3614,7 @@ struct logging_colors_t {
 
     explicit logging_colors_t() noexcept {
 #if defined(_WIN32)
-        if (!::isatty(_fileno(stdout))) return;
+        if (!::_isatty(_fileno(stdout))) return;
 #endif
 #if defined(__unix__) || defined(__APPLE__)
         if (!::isatty(STDOUT_FILENO)) return;
