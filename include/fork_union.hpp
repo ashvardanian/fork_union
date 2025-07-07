@@ -1433,9 +1433,9 @@ struct arm64_yield_t {
  *  or the timeout to expire.
  */
 #pragma GCC push_options
-#pragma GCC target("+wfxt")
+#pragma GCC target("arch=armv8-a+wfxt")
 #if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("+wfxt"))), apply_to = function)
+#pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
 #endif
 
 struct arm64_wfet_t {
