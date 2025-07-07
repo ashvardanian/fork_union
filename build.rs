@@ -7,9 +7,15 @@ fn main() -> Result<(), cc::Error> {
         .include("include")
         .define("FU_ENABLE_NUMA", "0")
         .opt_level(3) // Set optimization level to 2
-        .flag("-pedantic") // Ensure strict compliance with the C standard
-        .flag("-std=c++17") // Specify C++ standard
         .warnings(false);
+
+    // Platform-specific C++ standard flags
+    if cfg!(target_env = "msvc") {
+        build.flag("/std:c++17"); // MSVC flag for C++17
+    } else {
+        build.flag("-pedantic"); // GCC/Clang strict compliance
+        build.flag("-std=c++17"); // GCC/Clang C++17 flag
+    }
 
     if let Err(e) = build.try_compile("fork_union") {
         print!("cargo:warning={}", e);
