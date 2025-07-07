@@ -40,4 +40,4 @@ bench = false
 rayon = "1.10"
 rand = "0.9"
 tokio = { version = "1.46.1", features = ["rt-multi-thread", "sync"] }
-simsimd = "6.4.10"
+simsimd = "6.5.0"

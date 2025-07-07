@@ -19,6 +19,7 @@ use std::env;
 use std::time::Instant;
 
 use fork_union as fu;
+use simsimd::{Distance, SpatialSimilarity};
 
 /// Embedding dimensions - fixed at compile time for better performance
 const EMBEDDING_DIMENSIONS: usize = 768;
@@ -32,7 +33,7 @@ type Embedding = [f32; EMBEDDING_DIMENSIONS];
 /// Result of a search operation - stored on stack to avoid heap allocations
 #[derive(Debug, Clone, Copy)]
 struct SearchResult {
-    best_similarity: f32,
+    best_similarity: Distance,
     best_index: usize,
     numa_node: usize,
 }
@@ -40,13 +41,13 @@ struct SearchResult {
 impl SearchResult {
     fn new(numa_node: usize) -> Self {
         Self {
-            best_similarity: f32::NEG_INFINITY,
+            best_similarity: Distance::NEG_INFINITY,
             best_index: 0,
             numa_node,
         }
     }
 
-    fn update_if_better(&mut self, similarity: f32, index: usize) {
+    fn update_if_better(&mut self, similarity: Distance, index: usize) {
         if similarity > self.best_similarity {
             self.best_similarity = similarity;
             self.best_index = index;
@@ -118,32 +119,6 @@ fn create_distributed_embeddings(
     Some(distributed_vec)
 }
 
-/// Fast cosine similarity using SimSIMD (placeholder for now - would need actual SimSIMD binding)
-#[inline]
-fn cosine_similarity_simd(a: &Embedding, b: &Embedding) -> f32 {
-    // TODO: Replace with actual SimSIMD call when binding is available
-    // For now, use optimized manual implementation
-    let mut dot_product = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
-    // Unroll loop for better vectorization
-    for i in (0..EMBEDDING_DIMENSIONS).step_by(4) {
-        let end = (i + 4).min(EMBEDDING_DIMENSIONS);
-        for j in i..end {
-            dot_product += a[j] * b[j];
-            norm_a += a[j] * a[j];
-            norm_b += b[j] * b[j];
-        }
-    }
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        0.0
-    } else {
-        dot_product / (norm_a.sqrt() * norm_b.sqrt())
-    }
-}
-
 /// Performs NUMA-aware search using Fork Union's for_threads API for optimal colocation
 fn numa_aware_search(
     storage: &DistributedEmbeddings,
@@ -187,7 +162,7 @@ fn numa_aware_search(
                 // Search vectors assigned to this thread
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = cosine_similarity_simd(query, vector);
+                        let similarity = f32::cosine(query, vector).unwrap();
                         // Convert local index to global round-robin index using the new method
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
@@ -251,7 +226,7 @@ fn worst_case_search(
                 // Search vectors assigned to this thread, regardless of NUMA locality
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = cosine_similarity_simd(query, vector);
+                        let similarity = f32::cosine(query, vector).unwrap();
                         // Convert to global index for consistent comparison
                         let global_index =
                             storage.local_to_global_index(numa_node, local_vector_idx);
@@ -288,7 +263,7 @@ fn benchmark_search<F>(
     println!("\n=== {} ===", name);
 
     let start = Instant::now();
-    let mut total_similarity = 0.0f32;
+    let mut total_similarity: Distance = 0.0;
 
     for (i, query) in queries.iter().enumerate() {
         let result = search_fn(storage, query, pool);
@@ -304,7 +279,7 @@ fn benchmark_search<F>(
     }
 
     let duration = start.elapsed();
-    let avg_similarity = total_similarity / queries.len() as f32;
+    let avg_similarity = total_similarity / queries.len() as Distance;
 
     println!(
         "Completed {} queries in {:.2}ms",
@@ -351,7 +326,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pool = fu::ThreadPool::try_spawn(threads)?;
 
     // Initialize NUMA-aware vector storage
-    println!("\n📚 Initializing vector storage...");
+    println!("");
+    println!("📚 Initializing vector storage...");
     let storage = create_distributed_embeddings(&mut pool, memory_scope_percent)
         .ok_or("Failed to initialize NUMA vector storage")?;
     println!(
@@ -362,7 +338,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate random queries with fixed-size vectors
     let query_count = 100; // Fixed number of queries for consistent benchmarking
-    println!("\n🎯 Generating {} random queries...", query_count);
+    println!("");
+    println!("🎯 Generating {} random queries...", query_count);
     let mut rng = rng();
     let mut queries = Vec::with_capacity(query_count);
 
@@ -391,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         worst_case_search,
     );
 
-    println!("\n✅ Search benchmarking completed!");
-    println!("Note: SimSIMD integration is ready for implementation when bindings are available.");
+    println!("");
+    println!("✅ Search benchmarking completed!");
     Ok(())
 }
