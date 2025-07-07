@@ -293,7 +293,7 @@ search_result_t search(std::span<float, dimensions> query) {
     fu::spin_mutex_t result_update; // ? Lighter `std::mutex` alternative w/out system calls
     
     auto concurrent_searcher = [&](auto first_prong, std::size_t count) noexcept {
-        auto [index, _, colocation] = first_prong;
+        auto [first_index, _, colocation] = first_prong;
         auto& vectors = colocation == 0 ? first_half : second_half;
         search_result_t thread_local_result;
         for (std::size_t task_index = first_index; task_index < first_index + count; ++task_index) {
@@ -355,6 +355,7 @@ Works in tight loops.
 One of the most common parallel workloads is the N-body simulation ¹.
 Implementations are available in both C++ and Rust in `scripts/nbody.cpp` and `scripts/nbody.rs`, respectively.
 Both are lightweight and involve little logic outside of number-crunching, so both can be easily profiled with `time` and introspected with `perf` Linux tools.
+Additional NUMA-aware Search examples are available in `scripts/search.rs`.
 
 ---
 

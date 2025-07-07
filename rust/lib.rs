@@ -1,4 +1,4 @@
-//! Low-latency OpenMP-style NUMA-aware thread pool for fork-join parallelism.
+//! Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
 //!
 //! Fork Union provides a minimalistic cross-platform thread-pool implementation and Parallel Algorithms,
 //! avoiding dynamic memory allocations, exceptions, system calls, and heavy Compare-And-Swap instructions.

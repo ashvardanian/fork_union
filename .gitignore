@@ -35,6 +35,7 @@
 build/
 build_debug/
 build_release/
+Testing/
 
 # Rust build artifacts
 Cargo.lock

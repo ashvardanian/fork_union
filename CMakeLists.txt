@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.14)
 project(
     fork_union
     VERSION 2.1.1
-    DESCRIPTION "OpenMP-style cross-platform fine-grained parallelism library"
+    DESCRIPTION "Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library"
     LANGUAGES CXX
 )
 

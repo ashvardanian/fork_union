@@ -1,5 +1,5 @@
 /**
- *  @brief  OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
+ *  @brief  Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   fork_union.hpp
  *  @author Ash Vardanian
  *  @date   May 2, 2025
