@@ -74,7 +74,7 @@
 #include <array>   // `std::array`
 
 #define FORK_UNION_VERSION_MAJOR 2
-#define FORK_UNION_VERSION_MINOR 0
+#define FORK_UNION_VERSION_MINOR 1
 #define FORK_UNION_VERSION_PATCH 0
 
 #if !defined(FU_ALLOW_UNSAFE)
