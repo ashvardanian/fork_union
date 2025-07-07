@@ -267,10 +267,10 @@ int main(void) {
     auto const threads_str = std::getenv("NBODY_THREADS");
 
     // Parse env vars and validate
-    std::size_t n = std::stoull(n_str ? n_str : "0");
-    std::size_t const iterations = std::stoull(iterations_str ? iterations_str : "1000");
+    std::size_t n = std::strtoull(n_str ? n_str : "0", nullptr, 10);
+    std::size_t const iterations = std::strtoull(iterations_str ? iterations_str : "1000", nullptr, 10);
     std::string_view const backend = backend_str ? backend_str : "fork_union_static";
-    std::size_t threads = std::stoull(threads_str ? threads_str : "0");
+    std::size_t threads = std::strtoull(threads_str ? threads_str : "0", nullptr, 10);
     if (threads == 0) threads = std::thread::hardware_concurrency();
     if (n == 0) n = threads;
 
