@@ -111,10 +111,12 @@
 #endif
 
 #if defined(_WIN32)
-#define NOMINMAX
-#include <windows.h> // `GlobalMemoryStatusEx`
-#include <io.h>      // `_isatty`, `_fileno`
+#define NOMINMAX                // Disable `max` macros conflicting with STL symbols
+#define _CRT_SECURE_NO_WARNINGS // Disable "This function or variable may be unsafe" warnings
+#include <windows.h>            // `GlobalMemoryStatusEx`
+#include <io.h>                 // `_isatty`, `_fileno`
 #undef NOMINMAX
+#undef _CRT_SECURE_NO_WARNINGS
 #endif
 
 /**
