@@ -3876,7 +3876,7 @@ struct log_capabilities_t {
 
         // CPU Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s├─ %sCPU:%s ", colors.dim(), colors.cyan(), colors.reset());
-        int pos = std::strlen(line_buffer);
+        int pos = static_cast<int>(std::strlen(line_buffer));
 
         bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
@@ -3915,7 +3915,7 @@ struct log_capabilities_t {
 
         // Memory Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s└─ %sRAM:%s ", colors.dim(), colors.cyan(), colors.reset());
-        pos = std::strlen(line_buffer);
+        pos = static_cast<int>(std::strlen(line_buffer));
 
         bool first_mem = true;
         if (caps & capability_numa_aware_k) {
