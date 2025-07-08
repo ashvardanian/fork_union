@@ -48,6 +48,7 @@ foreach (STD IN LISTS CXX_STANDARDS)
         PROPERTIES CXX_STANDARD ${STD}
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
+                   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
     # register it as a CTest test
@@ -72,7 +73,6 @@ set_target_properties(
     PROPERTIES CXX_STANDARD 20
                CXX_STANDARD_REQUIRED ON
                CXX_EXTENSIONS OFF
-               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     message(STATUS "Enabling OpenMP for fork_union_nbody on GCC")

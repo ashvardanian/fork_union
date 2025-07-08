@@ -34,6 +34,14 @@ set_target_properties(
 target_link_libraries(fork_union_dynamic PUBLIC fork_union)
 target_link_libraries(fork_union_static PUBLIC fork_union)
 
+# Set the output directory for all executables - on Windows requires more boilerplate:
+# https://stackoverflow.com/a/25328001
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
+
 # Tests & benchmarking scripts
 include(CTest)
 if (BUILD_TESTING)
