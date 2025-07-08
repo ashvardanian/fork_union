@@ -383,8 +383,8 @@ You can rerun those benchmarks with the following commands:
 ```bash
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
 cmake --build build_release --config Release
-time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_static build_release/scripts/fork_union_nbody
-time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_dynamic build_release/scripts/fork_union_nbody
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_static build_release/fork_union_nbody
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_dynamic build_release/fork_union_nbody
 ```
 
 ## Safety & Logic
@@ -427,14 +427,14 @@ To run the C++ tests, use CMake:
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
 cmake --build build_release --config Release
 ctest -C build_release                          # run all tests
-build_release/scripts/fork_union_nbody          # run the benchmarks
+build_release/fork_union_nbody                  # run the benchmarks
 ```
 
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:
 
 ```bash
 cmake --build build_debug --config Debug  # build with Debug symbols
-build_debug/scripts/fork_union_test_cpp20 # run a single test executable
+build_debug/fork_union_test_cpp20         # run a single test executable
 ```
 
 To include NUMA, Huge Pages, and other optimizations on Linux, make sure to install dependencies:
@@ -451,7 +451,7 @@ To build with an alternative compiler, like LLVM Clang, use the following comman
 sudo apt-get install libomp-15-dev clang++-15 # OpenMP version must match Clang
 cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=clang++-15
 cmake --build build_debug --config Debug
-build_debug/scripts/fork_union_test_cpp20
+build_debug/fork_union_test_cpp20
 ```
 
 For Rust, use the following command:
