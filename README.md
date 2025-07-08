@@ -425,8 +425,8 @@ To run the C++ tests, use CMake:
 
 ```bash
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
-cmake --build build_release --config Release
-ctest -C build_release                          # run all tests
+cmake --build build_release --config Release -j
+ctest --test-dir build_release                  # run all tests
 build_release/fork_union_nbody                  # run the benchmarks
 ```
 
