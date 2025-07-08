@@ -2839,7 +2839,7 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let caps = capabilities_string();
-        std::println!("Capabilities: {:?}", caps);
+        std::println!("Capabilities: {caps:?}");
         assert!(caps.is_some());
     }
 
@@ -2851,11 +2851,7 @@ mod tests {
         let qos = count_quality_levels();
 
         std::println!(
-            "Cores: {}, NUMA: {}, Colocations: {}, QoS: {}",
-            cores,
-            numa,
-            colocations,
-            qos
+            "Cores: {cores}, NUMA: {numa}, Colocations: {colocations}, QoS: {qos}"
         );
         assert!(cores > 0);
     }
@@ -2887,8 +2883,7 @@ mod tests {
         for (i, flag) in visited.iter().enumerate() {
             assert!(
                 flag.load(Ordering::Relaxed),
-                "thread {} never reached the callback",
-                i
+                "thread {i} never reached the callback"
             );
         }
     }

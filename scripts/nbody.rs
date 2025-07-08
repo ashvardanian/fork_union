@@ -123,8 +123,7 @@ fn iteration_fu_static(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: &
             let bi = &bodies_ref[prong.task_index];
             let mut acc = Vector3::default();
 
-            for j in 0..n {
-                let bj = &bodies_ref[j];
+            for bj in bodies_ref.iter().take(n) {
                 acc += gravitational_force(bi, bj);
             }
             *force = acc;
@@ -150,8 +149,7 @@ fn iteration_fu_dynamic(pool: &mut fu::ThreadPool, bodies: &mut [Body], forces: 
             let bi = &bodies_ref[prong.task_index];
             let mut acc = Vector3::default();
 
-            for j in 0..n {
-                let bj = &bodies_ref[j];
+            for bj in bodies_ref.iter().take(n) {
                 acc += gravitational_force(bi, bj);
             }
             *force = acc;
@@ -200,7 +198,7 @@ fn iteration_rayon_dynamic(pool: &ThreadPool, bodies: &mut [Body], forces: &mut 
 fn iteration_rayon_static(pool: &ThreadPool, bodies: &mut [Body], forces: &mut [Vector3]) {
     let n = bodies.len();
     let workers = rayon::current_num_threads();
-    let stride = (n + workers - 1) / workers;
+    let stride = n.div_ceil(workers);
 
     pool.install(|| {
         forces
@@ -279,7 +277,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let threads = env::var("NBODY_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| hw_threads().into());
+        .unwrap_or_else(hw_threads);
 
     let bodies_n = n.unwrap_or(threads);
 
