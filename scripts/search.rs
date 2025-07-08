@@ -64,9 +64,7 @@ fn create_distributed_embeddings(
     memory_scope_percent: usize,
 ) -> Option<DistributedEmbeddings> {
     let colocations_count = fu::count_colocations();
-    println!(
-        "Initializing storage across {colocations_count} colocations"
-    );
+    println!("Initializing storage across {colocations_count} colocations");
 
     // Calculate total capacity based on total system memory and scope percentage
     let total_memory = fu::volume_any_pages();
@@ -164,7 +162,7 @@ fn numa_aware_search(
                 // Search vectors assigned to this thread
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = bf16::cosine(query, vector).unwrap();
+                        let similarity = bf16::dot(query, vector).unwrap();
                         // Convert local index to global round-robin index using the new method
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
@@ -228,7 +226,7 @@ fn worst_case_search(
                 // Search vectors assigned to this thread, regardless of NUMA locality
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = bf16::cosine(query, vector).unwrap();
+                        let similarity = bf16::dot(query, vector).unwrap();
                         // Convert to global index for consistent comparison
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
