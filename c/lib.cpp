@@ -1,5 +1,5 @@
 /**
- *  @brief  OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
+ *  @brief  Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   lib.cpp
  *  @author Ash Vardanian
  *  @date   June 27, 2025

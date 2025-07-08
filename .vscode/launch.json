@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "Build: Debug with GDB",
-            "program": "${workspaceFolder}/build_debug/scripts/fork_union_test_cpp20",
+            "program": "${workspaceFolder}/build_debug/fork_union_test_cpp20",
             "cwd": "${workspaceFolder}",
             "args": [],
             "setupCommands": [
@@ -49,7 +49,7 @@
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "Build: Debug with LLDB",
-            "program": "${workspaceFolder}/build_debug/scripts/fork_union_test_cpp20",
+            "program": "${workspaceFolder}/build_debug/fork_union_test_cpp20",
             "cwd": "${workspaceFolder}",
             "args": [],
             "setupCommands": [
@@ -78,7 +78,7 @@
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "Build: Debug with GDB",
-            "program": "${workspaceFolder}/build_debug/scripts/fork_union_nbody",
+            "program": "${workspaceFolder}/build_debug/fork_union_nbody",
             "cwd": "${workspaceFolder}",
             "args": [],
             "setupCommands": [

@@ -48,6 +48,7 @@ foreach (STD IN LISTS CXX_STANDARDS)
         PROPERTIES CXX_STANDARD ${STD}
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
+                   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
     # register it as a CTest test
@@ -55,10 +56,11 @@ foreach (STD IN LISTS CXX_STANDARDS)
     set_target_properties_for_fork_union_script(${TGT})
 
     # Link against `libatomic` for older GCC versions that might need it
-    # Note: AppleClang doesn't need `libatomic` as atomic operations are built-in
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR 
-        (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
-        target_link_libraries(${TGT} PRIVATE -latomic)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+        # AppleClang doesn't need `libatomic` as atomic operations are built-in
+        if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+            target_link_libraries(${TGT} PRIVATE -latomic)
+        endif ()
     endif ()
 
 endforeach ()

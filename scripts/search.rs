@@ -64,7 +64,7 @@ fn create_distributed_embeddings(
     memory_scope_percent: usize,
 ) -> Option<DistributedEmbeddings> {
     let colocations_count = fu::count_colocations();
-    println!("Initializing storage across {} colocations", colocations_count);
+    println!("Initializing storage across {colocations_count} colocations");
 
     // Calculate total capacity based on total system memory and scope percentage
     let total_memory = fu::volume_any_pages();
@@ -87,7 +87,7 @@ fn create_distributed_embeddings(
         memory_scope_percent,
         total_memory as f64 / 1024.0 / 1024.0
     );
-    println!("Total vectors to create: {}", total_vectors);
+    println!("Total vectors to create: {total_vectors}");
 
     // Create RoundRobinVec and resize to target capacity
     let mut distributed_vec = DistributedEmbeddings::new()?;
@@ -103,8 +103,8 @@ fn create_distributed_embeddings(
         || {
             let mut rng = rng();
             let mut embedding = [bf16::from_f32(0.0); EMBEDDING_DIMENSIONS];
-            for dim in 0..EMBEDDING_DIMENSIONS {
-                embedding[dim] = bf16::from_f32(rng.random_range(-1.0..1.0));
+            for (_dim, item) in embedding.iter_mut().enumerate().take(EMBEDDING_DIMENSIONS) {
+                *item = bf16::from_f32(rng.random_range(-1.0..1.0));
             }
             embedding
         },
@@ -162,7 +162,7 @@ fn numa_aware_search(
                 // Search vectors assigned to this thread
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = bf16::cosine(query, vector).unwrap();
+                        let similarity = bf16::dot(query, vector).unwrap();
                         // Convert local index to global round-robin index using the new method
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
@@ -226,7 +226,7 @@ fn worst_case_search(
                 // Search vectors assigned to this thread, regardless of NUMA locality
                 for local_vector_idx in range {
                     if let Some(vector) = node_vectors.get(local_vector_idx) {
-                        let similarity = bf16::cosine(query, vector).unwrap();
+                        let similarity = bf16::dot(query, vector).unwrap();
                         // Convert to global index for consistent comparison
                         let global_index =
                             storage.local_to_global_index(colocation_index, local_vector_idx);
@@ -260,7 +260,7 @@ fn benchmark_search<F>(
 ) where
     F: Fn(&DistributedEmbeddings, &Embedding, &mut fu::ThreadPool) -> SearchResult,
 {
-    println!("\n=== {} ===", name);
+    println!("\n=== {name} ===");
 
     let start = Instant::now();
     let mut total_similarity: Distance = 0.0;
@@ -290,7 +290,7 @@ fn benchmark_search<F>(
         "Average time per query: {:.2}μs",
         duration.as_secs_f64() * 1_000_000.0 / queries.len() as f64
     );
-    println!("Average similarity: {:.6}", avg_similarity);
+    println!("Average similarity: {avg_similarity:.6}");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -318,15 +318,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Thread colocations: {}", fu::count_colocations());
     println!("  NUMA enabled: {}", fu::numa_enabled());
     println!("Configuration:");
-    println!("  Embedding dimensions: {}", EMBEDDING_DIMENSIONS);
-    println!("  Memory scope: {}%", memory_scope_percent);
-    println!("  Thread pool size: {}", threads);
+    println!("  Embedding dimensions: {EMBEDDING_DIMENSIONS}");
+    println!("  Memory scope: {memory_scope_percent}%");
+    println!("  Thread pool size: {threads}");
 
     // Create thread pool
     let mut pool = fu::ThreadPool::try_spawn(threads)?;
 
     // Initialize NUMA-aware vector storage
-    println!("");
+    println!();
     println!("📚 Initializing vector storage...");
     let storage = create_distributed_embeddings(&mut pool, memory_scope_percent)
         .ok_or("Failed to initialize NUMA vector storage")?;
@@ -338,15 +338,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate random queries with fixed-size vectors
     let query_count = 100; // Fixed number of queries for consistent benchmarking
-    println!("");
-    println!("🎯 Generating {} random queries...", query_count);
+    println!();
+    println!("🎯 Generating {query_count} random queries...");
     let mut rng = rng();
     let mut queries = Vec::with_capacity(query_count);
 
     for _ in 0..query_count {
         let mut query = [bf16::from_f32(0.0); EMBEDDING_DIMENSIONS];
-        for dim in 0..EMBEDDING_DIMENSIONS {
-            query[dim] = bf16::from_f32(rng.random_range(-1.0..1.0));
+        for (_dim, item) in query.iter_mut().enumerate().take(EMBEDDING_DIMENSIONS) {
+            *item = bf16::from_f32(rng.random_range(-1.0..1.0));
         }
         queries.push(query);
     }
@@ -368,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         worst_case_search,
     );
 
-    println!("");
+    println!();
     println!("✅ Search benchmarking completed!");
     Ok(())
 }

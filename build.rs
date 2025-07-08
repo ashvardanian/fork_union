@@ -18,7 +18,7 @@ fn main() -> Result<(), cc::Error> {
     }
 
     if let Err(e) = build.try_compile("fork_union") {
-        print!("cargo:warning={}", e);
+        print!("cargo:warning={e}");
         return Err(e);
     }
 

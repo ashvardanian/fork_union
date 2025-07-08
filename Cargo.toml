@@ -1,6 +1,6 @@
 [package]
 name = "fork_union"
-description = "OpenMP-style cross-platform fine-grained parallelism library"
+description = "Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library"
 version = "2.1.1"
 edition = "2021"
 authors = ["Ash Vardanian"]

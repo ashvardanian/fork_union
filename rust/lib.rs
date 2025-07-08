@@ -1,4 +1,4 @@
-//! Low-latency OpenMP-style NUMA-aware thread pool for fork-join parallelism.
+//! Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
 //!
 //! Fork Union provides a minimalistic cross-platform thread-pool implementation and Parallel Algorithms,
 //! avoiding dynamic memory allocations, exceptions, system calls, and heavy Compare-And-Swap instructions.
@@ -93,7 +93,7 @@ impl<T, const PAUSE: bool> BasicSpinMutex<T, PAUSE> {
     /// let mut guard = mutex.lock();
     /// *guard = 42;
     /// ```
-    pub fn lock(&self) -> BasicSpinMutexGuard<T, PAUSE> {
+    pub fn lock(&self) -> BasicSpinMutexGuard<'_, T, PAUSE> {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -126,7 +126,7 @@ impl<T, const PAUSE: bool> BasicSpinMutex<T, PAUSE> {
     ///     println!("Lock is currently held by another thread");
     /// };
     /// ```
-    pub fn try_lock(&self) -> Option<BasicSpinMutexGuard<T, PAUSE>> {
+    pub fn try_lock(&self) -> Option<BasicSpinMutexGuard<'_, T, PAUSE>> {
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -743,7 +743,7 @@ impl ThreadPool {
     ///     // Work executes when _op is dropped
     /// }
     /// ```
-    pub fn for_threads<F>(&mut self, function: F) -> ForThreadsOperation<F>
+    pub fn for_threads<F>(&mut self, function: F) -> ForThreadsOperation<'_, F>
     where
         F: Fn(usize, usize) + Sync,
     {
@@ -773,7 +773,7 @@ impl ThreadPool {
     ///     std::hint::black_box(result); // Prevent optimization
     /// });
     /// ```
-    pub fn for_n<F>(&mut self, n: usize, function: F) -> ForNOperation<F>
+    pub fn for_n<F>(&mut self, n: usize, function: F) -> ForNOperation<'_, F>
     where
         F: Fn(Prong) + Sync,
     {
@@ -810,7 +810,7 @@ impl ThreadPool {
     ///     }
     /// });
     /// ```
-    pub fn for_n_dynamic<F>(&mut self, n: usize, function: F) -> ForNDynamicOperation<F>
+    pub fn for_n_dynamic<F>(&mut self, n: usize, function: F) -> ForNDynamicOperation<'_, F>
     where
         F: Fn(Prong) + Sync,
     {
@@ -853,7 +853,7 @@ impl ThreadPool {
     ///              prong.thread_index, start_index, start_index + count);
     /// });
     /// ```
-    pub fn for_slices<F>(&mut self, n: usize, function: F) -> ForSlicesOperation<F>
+    pub fn for_slices<F>(&mut self, n: usize, function: F) -> ForSlicesOperation<'_, F>
     where
         F: Fn(Prong, usize) + Sync,
     {
@@ -2366,31 +2366,37 @@ impl<T> RoundRobinVec<T> {
                 let threads_in_colocation = pool.count_threads_in(colocation_index);
                 let thread_local_index = pool.locate_thread_in(thread_index, colocation_index);
 
-                if node_len > current_len {
-                    // Growing: construct new elements in parallel
-                    let new_elements = node_len - current_len;
-                    let split = IndexedSplit::new(new_elements, threads_in_colocation);
-                    let range = split.get(thread_local_index);
+                match node_len.cmp(&current_len) {
+                    std::cmp::Ordering::Greater => {
+                        // Growing: construct new elements in parallel
+                        let new_elements = node_len - current_len;
+                        let split = IndexedSplit::new(new_elements, threads_in_colocation);
+                        let range = split.get(thread_local_index);
 
-                    unsafe {
-                        let ptr = node_vec.as_mut_ptr();
-                        for i in range {
-                            let idx = current_len + i;
-                            core::ptr::write(ptr.add(idx), value.clone());
+                        unsafe {
+                            let ptr = node_vec.as_mut_ptr();
+                            for i in range {
+                                let idx = current_len + i;
+                                core::ptr::write(ptr.add(idx), value.clone());
+                            }
                         }
                     }
-                } else if node_len < current_len {
-                    // Shrinking: drop elements in parallel
-                    let elements_to_drop = current_len - node_len;
-                    let split = IndexedSplit::new(elements_to_drop, threads_in_colocation);
-                    let range = split.get(thread_local_index);
+                    std::cmp::Ordering::Less => {
+                        // Shrinking: drop elements in parallel
+                        let elements_to_drop = current_len - node_len;
+                        let split = IndexedSplit::new(elements_to_drop, threads_in_colocation);
+                        let range = split.get(thread_local_index);
 
-                    unsafe {
-                        let ptr = node_vec.as_mut_ptr();
-                        for i in range {
-                            let idx = node_len + i;
-                            core::ptr::drop_in_place(ptr.add(idx));
+                        unsafe {
+                            let ptr = node_vec.as_mut_ptr();
+                            for i in range {
+                                let idx = node_len + i;
+                                core::ptr::drop_in_place(ptr.add(idx));
+                            }
                         }
+                    }
+                    std::cmp::Ordering::Equal => {
+                        // No change needed
                     }
                 }
             }
@@ -2428,11 +2434,13 @@ impl<T> SafePtr<T> {
     }
 
     /// Accesses the element at the given index.
+    #[allow(clippy::mut_from_ref)]
     pub fn get_mut_at(&self, index: usize) -> &mut T {
         unsafe { &mut *self.0.add(index) }
     }
 
     /// Accesses the element.
+    #[allow(clippy::mut_from_ref)]
     pub fn get_mut(&self) -> &mut T {
         unsafe { &mut *self.0 }
     }
@@ -2778,7 +2786,7 @@ where
 /// The remaining chunks have size `floor(tasks / threads)`.
 ///
 /// This ensures optimal load balancing across threads with minimal size variance.
-/// See: https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/
+/// See: <https://lemire.me/blog/2025/05/22/dividing-an-array-into-fair-sized-chunks/>
 #[derive(Debug, Clone)]
 pub struct IndexedSplit {
     quotient: usize,
@@ -2831,7 +2839,7 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let caps = capabilities_string();
-        std::println!("Capabilities: {:?}", caps);
+        std::println!("Capabilities: {caps:?}");
         assert!(caps.is_some());
     }
 
@@ -2843,11 +2851,7 @@ mod tests {
         let qos = count_quality_levels();
 
         std::println!(
-            "Cores: {}, NUMA: {}, Colocations: {}, QoS: {}",
-            cores,
-            numa,
-            colocations,
-            qos
+            "Cores: {cores}, NUMA: {numa}, Colocations: {colocations}, QoS: {qos}"
         );
         assert!(cores > 0);
     }
@@ -2879,8 +2883,7 @@ mod tests {
         for (i, flag) in visited.iter().enumerate() {
             assert!(
                 flag.load(Ordering::Relaxed),
-                "thread {} never reached the callback",
-                i
+                "thread {i} never reached the callback"
             );
         }
     }

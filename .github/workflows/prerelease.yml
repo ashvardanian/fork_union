@@ -59,8 +59,8 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
         # Rust
       - name: Set up Rust
@@ -94,8 +94,8 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
         # Rust
       - name: Set up Rust
@@ -125,8 +125,8 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
         # Rust
       - name: Set up Rust
@@ -152,10 +152,12 @@ jobs:
           choco install cmake
           cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build_artifacts --config RelWithDebInfo
+      - name: List build artifacts
+        run: Get-ChildItem -Recurse .\build_artifacts
       - name: Test C++
         run: |
-          .\build_artifacts\scripts\fork_union_test_cpp17.exe
-          .\build_artifacts\scripts\fork_union_test_cpp20.exe
+          .\build_artifacts\fork_union_test_cpp17.exe
+          .\build_artifacts\fork_union_test_cpp20.exe
 
         # Rust
       - name: Set up Rust
