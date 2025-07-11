@@ -1516,7 +1516,7 @@ struct x86_tpause_t {
             "mov    %[hi], %%edx\n\t"       // deadline_hi
             ".byte  0x66, 0x0F, 0xAE, 0xF3" // TPAUSE EBX
             :
-            : [lo] "r"(deadline_lo), [hi] "r"(deadline_lo), "b"(sleep_level)
+            : [lo] "r"(deadline_lo), [hi] "r"(deadline_hi), "b"(sleep_level)
             : "eax", "edx", "memory", "cc");
     }
 };
