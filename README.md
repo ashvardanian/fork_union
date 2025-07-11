@@ -433,8 +433,9 @@ build_release/fork_union_nbody                  # run the benchmarks
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:
 
 ```bash
-cmake --build build_debug --config Debug  # build with Debug symbols
-build_debug/fork_union_test_cpp20         # run a single test executable
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug
+cmake --build build_debug --config Debug        # build with Debug symbols
+build_debug/fork_union_test_cpp20               # run a single test executable
 ```
 
 To include NUMA, Huge Pages, and other optimizations on Linux, make sure to install dependencies:

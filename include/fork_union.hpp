@@ -338,7 +338,7 @@ struct prong {
     constexpr prong &operator=(prong &&) = default;
     constexpr prong &operator=(prong const &) = default;
 
-    explicit prong(task_index_t task, thread_index_t thread = 0) noexcept : task(task), thread(thread) {}
+    explicit prong(task_index_t task, thread_index_t thread) noexcept : task(task), thread(thread) {}
 
     inline operator task_index_t() const noexcept { return task; }
 };
@@ -365,7 +365,7 @@ struct colocated_prong {
     constexpr colocated_prong &operator=(colocated_prong const &) = default;
     constexpr colocated_prong &operator=(colocated_prong &&) = default;
 
-    explicit colocated_prong(task_index_t task, thread_index_t thread = 0, colocation_index_t colocation = 0) noexcept
+    explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
         : task(task), thread(thread), colocation(colocation) {}
 
     colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
@@ -394,7 +394,7 @@ struct colocated_thread {
     constexpr colocated_thread &operator=(colocated_thread const &) = default;
     constexpr colocated_thread &operator=(colocated_thread &&) = default;
 
-    explicit colocated_thread(thread_index_t thread, colocation_index_t colocation = 0) noexcept
+    explicit colocated_thread(thread_index_t thread, colocation_index_t colocation) noexcept
         : thread(thread), colocation(colocation) {}
 
     inline operator thread_index_t() const noexcept { return thread; }
@@ -640,6 +640,9 @@ struct indexed_split {
         index_t const count = quotient_ + (i < remainder_ ? 1 : 0);
         return {begin, count};
     }
+
+    inline index_t smallest_size() const noexcept { return quotient_; }
+    inline index_t largest_size() const noexcept { return quotient_ + (remainder_ > 0); }
 
   private:
     index_t quotient_ {0};
@@ -1336,7 +1339,7 @@ class basic_pool {
     template <typename fork_type_>
     static void _call_as_lambda(punned_fork_context_t punned_lambda_pointer, thread_index_t thread_index) noexcept {
         fork_type_ &lambda_object = *static_cast<fork_type_ *>(punned_lambda_pointer);
-        lambda_object(colocated_thread_t {thread_index});
+        lambda_object(colocated_thread_t {thread_index, 0});
     }
 
     /**
@@ -2442,6 +2445,7 @@ struct linux_colocated_pool {
     using epoch_index_t = index_t;  // ? A.k.a. number of previous API calls in [0, UINT_MAX)
     using thread_index_t = index_t; // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
     using colocated_thread_t = colocated_thread<thread_index_t>;
+    using prong_t = colocated_prong<index_t>;
 
     using punned_fork_context_t = void *;                                     // ? Pointer to the on-stack lambda
     using trampoline_t = void (*)(punned_fork_context_t, colocated_thread_t); // ? Wraps lambda's `operator()`
