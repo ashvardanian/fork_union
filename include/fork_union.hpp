@@ -2231,7 +2231,7 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
 #if FU_ENABLE_NUMA
 
     // In simple cases, just redirect to `numa_alloc_onnode`
-    if (page_size_bytes == ::numa_pagesize()) return ::numa_alloc_onnode(size_bytes, node_id);
+    if (page_size_bytes == static_cast<std::size_t>(::numa_pagesize())) return ::numa_alloc_onnode(size_bytes, node_id);
 
     // Make sure the page size makes sense for Linux
     int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
