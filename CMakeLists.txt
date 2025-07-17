@@ -18,6 +18,13 @@ target_include_directories(
     fork_union INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
 )
 
+# Strict compilation flags
+target_compile_options(
+    fork_union INTERFACE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wcast-qual -Wcast-align -Wunused -Wno-unused-parameter -Wno-unknown-pragmas>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
+)
+
 # Pre-compiled libraries built from `c/lib.cpp`
 add_library(fork_union_dynamic SHARED c/lib.cpp)
 add_library(fork_union_static STATIC c/lib.cpp)
