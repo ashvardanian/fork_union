@@ -368,7 +368,8 @@ struct colocated_prong {
     explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
         : task(task), thread(thread), colocation(colocation) {}
 
-    colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
+    explicit colocated_prong(prong<index_t> const &prong) noexcept
+        : task(prong.task), thread(prong.thread), colocation(0) {}
 
     inline operator task_index_t() const noexcept { return task; }
     inline operator prong<index_t>() const noexcept { return prong<index_t> {task, thread}; }
@@ -1687,7 +1688,7 @@ static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept 
  */
 static std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
-    return ::numa_pagesize();
+    return static_cast<std::size_t>(::numa_pagesize());
 #elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
     return ::sysconf(_SC_PAGESIZE);
 #else
@@ -2114,7 +2115,7 @@ struct numa_topology {
 
             // Most likely, this will fill `core_ids_ptr` with `std::iota`-like values
             for (std::size_t bit_offset = 0; bit_offset < numa_mask->size; ++bit_offset)
-                if (::numa_bitmask_isbitset(numa_mask, bit_offset))
+                if (::numa_bitmask_isbitset(numa_mask, static_cast<unsigned int>(bit_offset)))
                     core_ids_ptr[core_index++] = static_cast<numa_core_id_t>(bit_offset);
 
             // Fetch Huge Page sizes for this NUMA node
@@ -2959,9 +2960,10 @@ struct linux_colocated_pool {
 
     void _reset_affinity() noexcept {
         int const max_possible_cores = ::numa_num_possible_cpus();
-        cpu_set_t *cpu_set_ptr = CPU_ALLOC(max_possible_cores);
+        if (max_possible_cores <= 0) return; // ? No cores available, nothing to reset
+        cpu_set_t *cpu_set_ptr = CPU_ALLOC(static_cast<unsigned long>(max_possible_cores));
         if (!cpu_set_ptr) return;
-        std::size_t const cpu_set_size = CPU_ALLOC_SIZE(max_possible_cores);
+        std::size_t const cpu_set_size = CPU_ALLOC_SIZE(static_cast<unsigned long>(max_possible_cores));
         CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
         for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
         int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
@@ -3051,7 +3053,7 @@ struct linux_colocated_pool {
         char16_name_t &output_name, char const *base_name, //
         std::size_t const index, std::size_t const max_possible_cores) noexcept {
 
-        constexpr std::size_t max_visible_chars = sizeof(char16_name_t) - 1; // room left after the terminator
+        constexpr int max_visible_chars = sizeof(char16_name_t) - 1; // room left after the terminator
         int const digits = max_possible_cores < 10      ? 1
                            : max_possible_cores < 100   ? 2
                            : max_possible_cores < 1000  ? 3
@@ -3066,7 +3068,7 @@ struct linux_colocated_pool {
 #pragma GCC diagnostic pop
         }
         else {
-            int const base_len = static_cast<int>(max_visible_chars - digits - 1); // -1 for ':'
+            int const base_len = max_visible_chars - digits - 1; // -1 for ':'
             // "%.*s" - truncates base_name to base_len
             // "%0*zu" - prints zero‑padded index using exactly 'digits' characters
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%.*s:%0*zu", base_len, base_name, digits, index + 1);
@@ -3651,29 +3653,29 @@ struct logging_colors_t {
     }
 
     /* ANSI style codes */
-    char const *reset() { return use_colors_ ? "\033[0m" : ""; }
-    char const *bold() { return use_colors_ ? "\033[1m" : ""; }
-    char const *dim() { return use_colors_ ? "\033[2m" : ""; }
+    char const *reset() const noexcept { return use_colors_ ? "\033[0m" : ""; }
+    char const *bold() const noexcept { return use_colors_ ? "\033[1m" : ""; }
+    char const *dim() const noexcept { return use_colors_ ? "\033[2m" : ""; }
 
     /* ANSI color codes */
-    char const *red() { return use_colors_ ? "\033[31m" : ""; }
-    char const *green() { return use_colors_ ? "\033[32m" : ""; }
-    char const *yellow() { return use_colors_ ? "\033[33m" : ""; }
-    char const *blue() { return use_colors_ ? "\033[34m" : ""; }
-    char const *magenta() { return use_colors_ ? "\033[35m" : ""; }
-    char const *cyan() { return use_colors_ ? "\033[36m" : ""; }
-    char const *white() { return use_colors_ ? "\033[37m" : ""; }
-    char const *gray() { return use_colors_ ? "\033[90m" : ""; }
+    char const *red() const noexcept { return use_colors_ ? "\033[31m" : ""; }
+    char const *green() const noexcept { return use_colors_ ? "\033[32m" : ""; }
+    char const *yellow() const noexcept { return use_colors_ ? "\033[33m" : ""; }
+    char const *blue() const noexcept { return use_colors_ ? "\033[34m" : ""; }
+    char const *magenta() const noexcept { return use_colors_ ? "\033[35m" : ""; }
+    char const *cyan() const noexcept { return use_colors_ ? "\033[36m" : ""; }
+    char const *white() const noexcept { return use_colors_ ? "\033[37m" : ""; }
+    char const *gray() const noexcept { return use_colors_ ? "\033[90m" : ""; }
 
     /* Compound styles */
-    char const *bold_red() { return use_colors_ ? "\033[1;31m" : ""; }
-    char const *bold_green() { return use_colors_ ? "\033[1;32m" : ""; }
-    char const *bold_yellow() { return use_colors_ ? "\033[1;33m" : ""; }
-    char const *bold_blue() { return use_colors_ ? "\033[1;34m" : ""; }
-    char const *bold_magenta() { return use_colors_ ? "\033[1;35m" : ""; }
-    char const *bold_cyan() { return use_colors_ ? "\033[1;36m" : ""; }
-    char const *bold_white() { return use_colors_ ? "\033[1;37m" : ""; }
-    char const *bold_gray() { return use_colors_ ? "\033[1;90m" : ""; }
+    char const *bold_red() const noexcept { return use_colors_ ? "\033[1;31m" : ""; }
+    char const *bold_green() const noexcept { return use_colors_ ? "\033[1;32m" : ""; }
+    char const *bold_yellow() const noexcept { return use_colors_ ? "\033[1;33m" : ""; }
+    char const *bold_blue() const noexcept { return use_colors_ ? "\033[1;34m" : ""; }
+    char const *bold_magenta() const noexcept { return use_colors_ ? "\033[1;35m" : ""; }
+    char const *bold_cyan() const noexcept { return use_colors_ ? "\033[1;36m" : ""; }
+    char const *bold_white() const noexcept { return use_colors_ ? "\033[1;37m" : ""; }
+    char const *bold_gray() const noexcept { return use_colors_ ? "\033[1;90m" : ""; }
 };
 
 /**
