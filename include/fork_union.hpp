@@ -314,9 +314,9 @@ struct broadcast_join {
     }
 
     ~broadcast_join() noexcept { join(); }
-    broadcast_join(broadcast_join &&) = default;
+    broadcast_join(broadcast_join &&) noexcept = default;
     broadcast_join(broadcast_join const &) = delete;
-    broadcast_join &operator=(broadcast_join &&) = default;
+    broadcast_join &operator=(broadcast_join &&) noexcept = default;
     broadcast_join &operator=(broadcast_join const &) = delete;
 };
 
@@ -332,11 +332,11 @@ struct prong {
     task_index_t task {0};
     thread_index_t thread {0};
 
-    constexpr prong() = default;
-    constexpr prong(prong &&) = default;
-    constexpr prong(prong const &) = default;
-    constexpr prong &operator=(prong &&) = default;
-    constexpr prong &operator=(prong const &) = default;
+    constexpr prong() noexcept = default;
+    constexpr prong(prong &&) noexcept = default;
+    constexpr prong(prong const &) noexcept = default;
+    constexpr prong &operator=(prong &&) noexcept = default;
+    constexpr prong &operator=(prong const &) noexcept = default;
 
     explicit prong(task_index_t task, thread_index_t thread) noexcept : task(task), thread(thread) {}
 
@@ -359,11 +359,11 @@ struct colocated_prong {
     thread_index_t thread {0};
     colocation_index_t colocation {0};
 
-    constexpr colocated_prong() = default;
-    constexpr colocated_prong(colocated_prong &&) = default;
-    constexpr colocated_prong(colocated_prong const &) = default;
-    constexpr colocated_prong &operator=(colocated_prong const &) = default;
-    constexpr colocated_prong &operator=(colocated_prong &&) = default;
+    constexpr colocated_prong() noexcept = default;
+    constexpr colocated_prong(colocated_prong &&) noexcept = default;
+    constexpr colocated_prong(colocated_prong const &) noexcept = default;
+    constexpr colocated_prong &operator=(colocated_prong const &) noexcept = default;
+    constexpr colocated_prong &operator=(colocated_prong &&) noexcept = default;
 
     explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
         : task(task), thread(thread), colocation(colocation) {}
@@ -389,11 +389,11 @@ struct colocated_thread {
     thread_index_t thread {0};
     colocation_index_t colocation {0};
 
-    constexpr colocated_thread() = default;
-    constexpr colocated_thread(colocated_thread &&) = default;
-    constexpr colocated_thread(colocated_thread const &) = default;
-    constexpr colocated_thread &operator=(colocated_thread const &) = default;
-    constexpr colocated_thread &operator=(colocated_thread &&) = default;
+    constexpr colocated_thread() noexcept = default;
+    constexpr colocated_thread(colocated_thread &&) noexcept = default;
+    constexpr colocated_thread(colocated_thread const &) noexcept = default;
+    constexpr colocated_thread &operator=(colocated_thread const &) noexcept = default;
+    constexpr colocated_thread &operator=(colocated_thread &&) noexcept = default;
 
     explicit colocated_thread(thread_index_t thread, colocation_index_t colocation) noexcept
         : thread(thread), colocation(colocation) {}
@@ -626,7 +626,7 @@ struct indexed_split {
     using index_t = index_type_;
     using indexed_range_t = indexed_range<index_t>;
 
-    inline indexed_split() = default;
+    inline indexed_split() noexcept = default;
 
     /**
      *  @brief Constructs an indexed split for a given number of tasks and threads.
@@ -716,7 +716,7 @@ struct coprime_permutation_range {
         index_t elements_left_ {0}; // countdown until `end()`
     };
 
-    coprime_permutation_range() = default;
+    coprime_permutation_range() noexcept = default;
 
     /**
      *  @param[in] start First element of the permutation.
