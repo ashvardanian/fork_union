@@ -368,8 +368,7 @@ struct colocated_prong {
     explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
         : task(task), thread(thread), colocation(colocation) {}
 
-    explicit colocated_prong(prong<index_t> const &prong) noexcept
-        : task(prong.task), thread(prong.thread), colocation(0) {}
+    colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
 
     inline operator task_index_t() const noexcept { return task; }
     inline operator prong<index_t>() const noexcept { return prong<index_t> {task, thread}; }
@@ -395,7 +394,7 @@ struct colocated_thread {
     constexpr colocated_thread &operator=(colocated_thread const &) noexcept = default;
     constexpr colocated_thread &operator=(colocated_thread &&) noexcept = default;
 
-    explicit colocated_thread(thread_index_t thread, colocation_index_t colocation) noexcept
+    colocated_thread(thread_index_t thread, colocation_index_t colocation = 0) noexcept
         : thread(thread), colocation(colocation) {}
 
     inline operator thread_index_t() const noexcept { return thread; }
