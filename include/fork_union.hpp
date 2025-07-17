@@ -122,65 +122,65 @@
  *  On C++20 and later we can use concepts for cleaner compile-time checks.
  */
 #if __cplusplus >= 202002L
-#define _FU_DETECT_CPP_20 1
+#define FU_DETECT_CPP_20_ 1
 #else
-#define _FU_DETECT_CPP_20 0
+#define FU_DETECT_CPP_20_ 0
 #endif
 #if __cplusplus >= 201703L
-#define _FU_DETECT_CPP_17 1
+#define FU_DETECT_CPP_17_ 1
 #else
-#define _FU_DETECT_CPP_17 0
+#define FU_DETECT_CPP_17_ 0
 #endif
 
-#if _FU_DETECT_CPP_17
+#if FU_DETECT_CPP_17_
 #include <type_traits> // `std::is_nothrow_invocable_r`
 #endif
 
-#if _FU_DETECT_CPP_20
+#if FU_DETECT_CPP_20_
 #include <concepts> // `std::same_as`, `std::invocable`
 #endif
 
-#if _FU_DETECT_CPP_17
-#define _FU_MAYBE_UNUSED [[maybe_unused]]
+#if FU_DETECT_CPP_17_
+#define FU_MAYBE_UNUSED_ [[maybe_unused]]
 #else
 #if defined(__GNUC__) || defined(__clang__)
-#define _FU_MAYBE_UNUSED __attribute__((unused))
+#define FU_MAYBE_UNUSED_ __attribute__((unused))
 #elif defined(_MSC_VER)
-#define _FU_MAYBE_UNUSED __pragma(warning(suppress : 4100))
+#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100))
 #else
-#define _FU_MAYBE_UNUSED
+#define FU_MAYBE_UNUSED_
 #endif
 #endif
 
-#if _FU_DETECT_CPP_20
-#define _FU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#if FU_DETECT_CPP_20_
+#define FU_UNLIKELY_(x) __builtin_expect(!!(x), 0)
 #else
-#define _FU_UNLIKELY(x) (x)
+#define FU_UNLIKELY_(x) (x)
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
-#define _FU_WITH_ASM_YIELDS 1
+#define FU_WITH_ASM_YIELDS_ 1
 #else
-#define _FU_WITH_ASM_YIELDS 0
+#define FU_WITH_ASM_YIELDS_ 0
 #endif
 
 /*  Detect target CPU architecture.
  *  We'll only use it when compiling Inline Assembly code on GCC or Clang.
  */
 #if defined(__arm64__) || defined(__arm64__) || defined(_M_ARM64)
-#define _FU_DETECT_ARCH_ARM64 1
+#define FU_DETECT_ARCH_ARM64_ 1
 #else
-#define _FU_DETECT_ARCH_ARM64 0
+#define FU_DETECT_ARCH_ARM64_ 0
 #endif
 #if defined(__x86_64__) || defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
-#define _FU_DETECT_ARCH_X86_64 1
+#define FU_DETECT_ARCH_X86_64_ 1
 #else
-#define _FU_DETECT_ARCH_X86_64 0
+#define FU_DETECT_ARCH_X86_64_ 0
 #endif
 #if defined(__riscv)
-#define _FU_DETECT_ARCH_RISC5 1
+#define FU_DETECT_ARCH_RISC5_ 1
 #else
-#define _FU_DETECT_ARCH_RISC5 0
+#define FU_DETECT_ARCH_RISC5_ 0
 #endif
 
 namespace ashvardanian {
@@ -557,7 +557,7 @@ struct dummy_lambda_t {};
  *
  *  @see Compatible with STL unique locks: https://en.cppreference.com/w/cpp/thread/unique_lock.html
  */
-#if _FU_DETECT_CPP_20
+#if FU_DETECT_CPP_20_
 
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
 class spin_mutex {
@@ -574,7 +574,7 @@ class spin_mutex {
     void unlock() noexcept { flag_.clear(std::memory_order_release); }
 };
 
-#else // _FU_DETECT_CPP_20
+#else // FU_DETECT_CPP_20_
 
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
 class spin_mutex {
@@ -598,7 +598,7 @@ class spin_mutex {
     void unlock() noexcept { flag_.store(false, std::memory_order_release); }
 };
 
-#endif // _FU_DETECT_CPP_20
+#endif // FU_DETECT_CPP_20_
 
 using spin_mutex_t = spin_mutex<>;
 
@@ -855,7 +855,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_thread_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_thread<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
 #else
@@ -867,7 +867,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_task_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
@@ -880,7 +880,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_slice_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>, index_t> ||
            std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>, index_t> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t, index_t>;
@@ -889,13 +889,13 @@ constexpr bool can_be_for_slice_callback() noexcept {
 #endif
 }
 
-#if _FU_DETECT_CPP_20 && defined(__cpp_concepts)
-#define _FU_DETECT_CONCEPTS 1
-#define _FU_REQUIRES(condition) requires(condition)
+#if FU_DETECT_CPP_20_ && defined(__cpp_concepts)
+#define FU_DETECT_CONCEPTS_ 1
+#define FU_REQUIRES_(condition) requires(condition)
 #else
-#define _FU_DETECT_CONCEPTS 0
-#define _FU_REQUIRES(condition)
-#endif // _FU_DETECT_CPP_20
+#define FU_DETECT_CONCEPTS_ 0
+#define FU_REQUIRES_(condition)
+#endif // FU_DETECT_CPP_20_
 
 #pragma endregion - Helpers and Constants
 
@@ -1130,7 +1130,7 @@ class basic_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -1141,7 +1141,7 @@ class basic_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();
@@ -1261,7 +1261,7 @@ class basic_pool {
      *  @param[in] fork The callback object, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_slices<fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1279,7 +1279,7 @@ class basic_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_n<fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1293,7 +1293,7 @@ class basic_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1367,8 +1367,8 @@ class basic_pool {
                    (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (_FU_UNLIKELY(mood == mood_t::die_k)) break;
-            if (_FU_UNLIKELY(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (FU_UNLIKELY_(mood == mood_t::die_k)) break;
+            if (FU_UNLIKELY_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_length_micros_));
                 continue;
             }
@@ -1377,7 +1377,7 @@ class basic_pool {
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
-            _FU_MAYBE_UNUSED thread_index_t const before_decrement =
+            FU_MAYBE_UNUSED_ thread_index_t const before_decrement =
                 threads_to_sync_.fetch_sub(1, std::memory_order_release);
             assert(before_decrement > 0 && "We can't be here if there are no worker threads");
         }
@@ -1387,7 +1387,7 @@ class basic_pool {
 using basic_pool_t = basic_pool<>;
 
 #pragma region Concepts
-#if _FU_DETECT_CONCEPTS
+#if FU_DETECT_CONCEPTS_
 
 struct broadcasted_noop_t {
     template <typename index_type_>
@@ -1420,16 +1420,16 @@ concept is_unsafe_pool =   //
         { p.unsafe_join() } -> std::same_as<void>;
     };
 
-#endif // _FU_DETECT_CONCEPTS
+#endif // FU_DETECT_CONCEPTS_
 #pragma endregion Concepts
 
 #pragma endregion - Basic Pool
 
 #pragma region - Hardware Friendly Yield
 
-#if _FU_WITH_ASM_YIELDS // We need inline assembly support
+#if FU_WITH_ASM_YIELDS_ // We need inline assembly support
 
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
 
 struct arm64_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("yield"); }
@@ -1477,9 +1477,9 @@ struct arm64_wfet_t {
 #pragma clang attribute pop
 #endif
 
-#endif // _FU_DETECT_ARCH_ARM64
+#endif // FU_DETECT_ARCH_ARM64_
 
-#if _FU_DETECT_ARCH_X86_64
+#if FU_DETECT_ARCH_X86_64_
 
 struct x86_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
@@ -1532,15 +1532,15 @@ struct x86_tpause_t {
 #pragma clang attribute pop
 #endif
 
-#endif // _FU_DETECT_ARCH_X86_64
+#endif // FU_DETECT_ARCH_X86_64_
 
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
 
 struct risc5_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#endif // _FU_DETECT_ARCH_RISC5
+#endif // FU_DETECT_ARCH_RISC5_
 
 #endif
 
@@ -1551,12 +1551,12 @@ struct risc5_pause_t {
 inline capabilities_t cpu_capabilities() noexcept {
     capabilities_t caps = capabilities_unknown_k;
 
-#if _FU_DETECT_ARCH_X86_64
+#if FU_DETECT_ARCH_X86_64_
 
     // Check for basic PAUSE instruction support (always available on x86-64)
     caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
 
-#if _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
+#if FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
     std::uint32_t eax, ebx, ecx, edx;
 
@@ -1568,7 +1568,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
 #endif
 
-#elif _FU_DETECT_ARCH_ARM64
+#elif FU_DETECT_ARCH_ARM64_
 
     // Basic YIELD is always available on AArch64
     caps = static_cast<capabilities_t>(caps | capability_arm64_yield_k);
@@ -1579,7 +1579,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     size_t size = sizeof(wfet_support);
     if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
         caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
-#elif _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
+#elif FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // On non-Apple ARM systems, try to read the system register
     // Note: This may fail on some systems where userspace access is restricted
     std::uint64_t id_aa64isar2_el0 = 0;
@@ -1589,7 +1589,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
 #endif
 
-#elif _FU_DETECT_ARCH_RISC5
+#elif FU_DETECT_ARCH_RISC5_
 
     // Basic PAUSE is available on RISC-V with Zihintpause extension
     // For now, we assume it's available if we're on RISC-V
@@ -2001,11 +2001,11 @@ struct numa_topology {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
 
   private:
+    allocator_t allocator_ {};
     numa_node_t *nodes_ {nullptr};
     numa_core_id_t *node_core_ids_ {nullptr}; // ? Unsigned integers in [0, threads_count), grouped by NUMA node
     std::size_t nodes_count_ {0};             // ? Number of NUMA nodes
     std::size_t cores_count_ {0};             // ? Total number of cores in all nodes
-    allocator_t allocator_ {};
 
   public:
     constexpr numa_topology() noexcept = default;
@@ -2179,7 +2179,8 @@ struct numa_topology {
         }
 
         // Deep copy
-        std::memcpy(scratch_core_ids, other.node_core_ids_, other.cores_count_ * sizeof(numa_core_id_t));
+        if (other.cores_count_ > 0)
+            std::memcpy(scratch_core_ids, other.node_core_ids_, other.cores_count_ * sizeof(numa_core_id_t));
         for (std::size_t i = 0; i < other.nodes_count_; ++i) {
             scratch_nodes[i] = other.nodes_[i];
             // Re-base `first_core_id` so it points into our own core-id block
@@ -2209,7 +2210,7 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
     ::bitmask node_mask_as_bitset;
     node_mask_as_bitset.size = sizeof(node_mask) * 8;
     node_mask_as_bitset.maskp = &node_mask.n[0];
-    ::numa_bitmask_setbit(&node_mask_as_bitset, node_id);
+    ::numa_bitmask_setbit(&node_mask_as_bitset, static_cast<unsigned int>(node_id));
     int mbind_flags;
 #if defined(MPOL_F_STATIC_NODES)
     mbind_flags = MPOL_F_STATIC_NODES;
@@ -2217,7 +2218,8 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
     mbind_flags = 1 << 15;
 #endif // MPOL_F_STATIC_NODES
 
-    long binding_status = ::mbind(ptr, size_bytes, MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1, mbind_flags);
+    long binding_status = ::mbind(ptr, size_bytes, MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1,
+                                  static_cast<unsigned int>(mbind_flags));
     if (binding_status < 0) return false; // ! Binding failed
     return true;                          // ? Binding succeeded
 #else
@@ -2242,8 +2244,10 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
     // Make sure the page size makes sense for Linux
     int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
     if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
-    else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB; }
-    else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_1GB; }
+    else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_2MB); }
+    else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) {
+        mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_1GB);
+    }
     else { return nullptr; } // ! Unsupported page size
 
     // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
@@ -2261,6 +2265,8 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
 }
 
 static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+    assert(ptr != nullptr && "Pointer must not be null");
+    assert(size_bytes > 0 && "Size must be greater than zero");
 #if FU_ENABLE_NUMA
     numa_free(ptr, size_bytes);
 #endif
@@ -2297,7 +2303,7 @@ struct linux_numa_allocator {
         : node_id_(id), default_page_size_(paging) {}
 
     template <typename other_type_>
-    constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
+    explicit constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
         : node_id_(o.node_id()), default_page_size_(o.default_page_size()) {}
 
     /**
@@ -2722,7 +2728,7 @@ struct linux_colocated_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -2733,7 +2739,7 @@ struct linux_colocated_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();
@@ -2873,7 +2879,7 @@ struct linux_colocated_pool {
      *  @param[in] fork The callback object, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_slices<fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -2886,7 +2892,7 @@ struct linux_colocated_pool {
      *  @param[in] fork The callback @b reference, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     void unsafe_for_slices(index_t const n, fork_type_ &fork) noexcept {
 
         invoke_for_slices<fork_type_ const &, index_t> invoker {n, threads_count(), fork};
@@ -2904,7 +2910,7 @@ struct linux_colocated_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_n<fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -2918,7 +2924,7 @@ struct linux_colocated_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_n_dynamic<fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -3029,8 +3035,8 @@ struct linux_colocated_pool {
                    (mood = pool->mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (_FU_UNLIKELY(mood == mood_t::die_k)) break;
-            if (_FU_UNLIKELY(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (FU_UNLIKELY_(mood == mood_t::die_k)) break;
+            if (FU_UNLIKELY_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 struct timespec ts {0, static_cast<long>(pool->sleep_length_micros_ * 1000)};
                 ::clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
                 continue;
@@ -3041,7 +3047,7 @@ struct linux_colocated_pool {
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
-            _FU_MAYBE_UNUSED thread_index_t const before_decrement =
+            FU_MAYBE_UNUSED_ thread_index_t const before_decrement =
                 pool->threads_to_sync_.fetch_sub(1, std::memory_order_release);
             assert(before_decrement > 0 && "We can't be here if there are no worker threads");
         }
@@ -3441,7 +3447,7 @@ struct linux_distributed_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -3452,7 +3458,7 @@ struct linux_distributed_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
         assert(colocations_ && "Thread pools must be initialized before broadcasting");
 
@@ -3526,7 +3532,7 @@ struct linux_distributed_pool {
      *  @param[in] fork The callback, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool,
                    invoke_distributed_for_slices<linux_distributed_pool, fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
@@ -3545,7 +3551,7 @@ struct linux_distributed_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool, invoke_distributed_for_n<linux_distributed_pool, fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -3559,7 +3565,7 @@ struct linux_distributed_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool,
                    invoke_distributed_for_n_dynamic<linux_distributed_pool, fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
@@ -3619,12 +3625,12 @@ struct linux_distributed_pool {
 using linux_colocated_pool_t = linux_colocated_pool<>;
 using linux_distributed_pool_t = linux_distributed_pool<>;
 
-#if _FU_DETECT_CONCEPTS
+#if FU_DETECT_CONCEPTS_
 static_assert(is_unsafe_pool<basic_pool_t> && is_unsafe_pool<linux_colocated_pool_t>,
               "These thread pools must be flexible and support unsafe operations");
 static_assert(is_pool<basic_pool_t> && is_pool<linux_colocated_pool_t> && is_pool<linux_distributed_pool_t>,
               "These thread pools must be fully compatible with the high-level APIs");
-#endif // _FU_DETECT_CONCEPTS
+#endif // FU_DETECT_CONCEPTS_
 
 #endif // FU_ENABLE_NUMA
 #pragma endregion - NUMA Pools

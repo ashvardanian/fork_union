@@ -81,11 +81,11 @@
  *  @see https://en.cppreference.com/w/c/language/arithmetic_types
  */
 #pragma once
-#include <stddef.h> // `size_t`, `bool`
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <stddef.h> // `size_t`, `bool`
 
 int fu_version_major(void); // ? Returns the major version of the Fork Union library
 int fu_version_minor(void); // ? Returns the minor version of the Fork Union library
