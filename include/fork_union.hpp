@@ -1567,6 +1567,8 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WAITPKG is bit 5 in ECX
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+    fu_unused_(ebx);
+    fu_unused_(edx);
 #endif
 
 #elif FU_DETECT_ARCH_ARM64_
