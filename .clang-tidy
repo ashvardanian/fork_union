@@ -1,0 +1,21 @@
+---
+Checks: >
+  bugprone-*,
+  cert-dcl37-c,
+  cert-dcl51-cpp,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-signed-char-misuse,
+  -bugprone-unhandled-self-assignment,
+  -bugprone-macro-parentheses,
+  -performance-avoid-endl,
+  modernize-use-nullptr,
+  readability-redundant-control-flow
+
+CheckOptions:
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::shared_ptr;std::unique_ptr'
+
+HeaderFilterRegex: '.*'
+FormatStyle: file

@@ -188,7 +188,6 @@ void iteration_fork_union_numa_static(linux_distributed_pool_t &pool, body_t *_F
                                       body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
     using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
-    std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This is a quadratic complexity all-to-all interaction, and it's not clear how
     // it can "shard" to take advantage of NUMA locality, especially for a small `n` world.
@@ -224,7 +223,6 @@ void iteration_fork_union_numa_dynamic(linux_distributed_pool_t &pool, body_t *_
                                        body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
     using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
-    std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This expressions is same as in `iteration_fork_union_numa_static` static version:
     pool.for_threads([&](auto thread_index) noexcept {
@@ -279,8 +277,8 @@ int main(void) {
     std::vector<vector3_t> forces(n);
 
     // Random generators are quite slow, but let's hope this doesn't take too long
-    std::uniform_real_distribution<float> coordinate_distribution(0.0, 1.0);
-    std::uniform_real_distribution<float> mass_distribution(1e20, 1e25);
+    std::uniform_real_distribution<float> coordinate_distribution(0.f, 1.f);
+    std::uniform_real_distribution<float> mass_distribution(1e20f, 1e25f);
     std::random_device random_device;
     std::mt19937 random_gen(random_device());
     for (std::size_t i = 0; i < n; ++i) {
