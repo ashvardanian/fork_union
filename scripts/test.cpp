@@ -265,10 +265,13 @@ static bool test_for_n() noexcept {
     auto pool = maker.construct();
     if (!pool.try_spawn(maker.scope())) return false;
 
-    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
+    using pool_t = decltype(pool);
+    using prong_t = typename pool_t::prong_t;
+
+    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task = task;
+        visited[count_populated].task = prong.task;
     });
 
     // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
@@ -277,10 +280,10 @@ static bool test_for_n() noexcept {
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task = task;
+        visited[count_populated].task = prong.task;
     });
 
     return counter.load() == default_parallel_tasks_k && contains_iota(visited);

@@ -285,19 +285,19 @@ struct standard_yield_t {
  *  According to the  C++ standard, the destructor of the `broadcast_join_t` will
  *  be called in the end of the `for_threads`-calling expression.
  */
-template <typename basic_pool_type_, typename fork_type_>
+template <typename pool_type_, typename fork_type_>
 struct broadcast_join {
 
-    using basic_pool_t = basic_pool_type_;
+    using pool_t = pool_type_;
     using fork_t = fork_type_;
 
   private:
-    basic_pool_t &pool_ref_;
+    pool_t &pool_ref_;
     fork_t fork_;                // ? We need this to extend the lifetime of the lambda object
     bool did_broadcast_ {false}; // ? Both
 
   public:
-    broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::forward<fork_t>(f)) {}
+    broadcast_join(pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::forward<fork_t>(f)) {}
     fork_t &fork_ref() noexcept { return fork_; }
 
     void broadcast() noexcept {
@@ -617,6 +617,8 @@ using indexed_range_t = indexed_range<>;
  *
  *  The first `(tasks % threads)` chunks have size `ceil(tasks / threads)`.
  *  The remaining `tasks - (tasks % threads)` chunks have size `floor(tasks / threads)`
+ *  Has the convenient added property that the difference between the largest and smallest
+ *  chunk size is at most 1, which can be used in some ordering algorithms.
  */
 template <typename index_type_ = std::size_t>
 struct indexed_split {
@@ -1244,6 +1246,9 @@ class basic_pool {
         sleep_length_micros_ = wake_up_periodicity_micros;
         mood_.store(mood_t::chill_k, std::memory_order_release);
     }
+
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
 
 #pragma endregion Control Flow
 
@@ -1972,7 +1977,7 @@ struct numa_node {
 using numa_node_t = numa_node<>;
 
 template <typename value_type_, typename comparator_type_ = std::less<value_type_>>
-void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = comparator_type_()) noexcept {
+void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = {}) noexcept {
     assert(array != nullptr && "Array must not be null");
     for (std::size_t i = 0; i < size - 1; ++i)
         for (std::size_t j = 0; j < size - i - 1; ++j)
@@ -2854,6 +2859,9 @@ struct linux_colocated_pool {
         }
     }
 
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
+
 #pragma endregion Control Flow
 
 #pragma region Indexed Task Scheduling
@@ -3502,6 +3510,9 @@ struct linux_distributed_pool {
         for (std::size_t i = 0; i < colocations_.size(); ++i)
             colocations_[i].only().pool.sleep(wake_up_periodicity_micros);
     }
+
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
 
 #pragma endregion Control Flow
 
