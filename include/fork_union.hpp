@@ -152,10 +152,12 @@
 #endif
 #endif
 
+#define fu_unused_(x) ((void)(x))
+
 #if FU_DETECT_CPP_20_
-#define FU_UNLIKELY_(x) __builtin_expect(!!(x), 0)
+#define fu_unlikely_(x) __builtin_expect(!!(x), 0)
 #else
-#define FU_UNLIKELY_(x) (x)
+#define fu_unlikely_(x) (x)
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -1366,8 +1368,8 @@ class basic_pool {
                    (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (FU_UNLIKELY_(mood == mood_t::die_k)) break;
-            if (FU_UNLIKELY_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (fu_unlikely_(mood == mood_t::die_k)) break;
+            if (fu_unlikely_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_length_micros_));
                 continue;
             }
@@ -2226,6 +2228,9 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
     if (binding_status < 0) return false; // ! Binding failed
     return true;                          // ? Binding succeeded
 #else
+    fu_unused_(ptr);
+    fu_unused_(size_bytes);
+    fu_unused_(node_id);
     return false;
 #endif // FU_ENABLE_NUMA
 }
@@ -2261,6 +2266,9 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
     }
     return result_ptr;
 #else
+    fu_unused_(size_bytes);
+    fu_unused_(page_size_bytes);
+    fu_unused_(node_id);
     return nullptr;
 #endif // FU_ENABLE_NUMA
 }
@@ -2270,6 +2278,9 @@ static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
     assert(size_bytes > 0 && "Size must be greater than zero");
 #if FU_ENABLE_NUMA
     numa_free(ptr, size_bytes);
+#else
+    fu_unused_(ptr);
+    fu_unused_(size_bytes);
 #endif
 }
 
@@ -3036,8 +3047,8 @@ struct linux_colocated_pool {
                    (mood = pool->mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (FU_UNLIKELY_(mood == mood_t::die_k)) break;
-            if (FU_UNLIKELY_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (fu_unlikely_(mood == mood_t::die_k)) break;
+            if (fu_unlikely_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 struct timespec ts {0, static_cast<long>(pool->sleep_length_micros_ * 1000)};
                 ::clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
                 continue;
