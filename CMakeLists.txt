@@ -49,6 +49,49 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
 
+# Static analysis tools
+find_program(CPPCHECK_EXECUTABLE cppcheck)
+if(CPPCHECK_EXECUTABLE)
+    add_custom_target(
+        cppcheck
+        COMMAND ${CPPCHECK_EXECUTABLE}
+            --enable=all
+            --std=c++17
+            --verbose
+            --quiet
+            --error-exitcode=1
+            --suppress=missingIncludeSystem
+            --suppress=unusedFunction
+            --suppress=unmatchedSuppression
+            --suppress=ConfigurationNotChecked
+            --suppress=knownConditionTrueFalse
+            --suppress=shadowFunction
+            --suppress=shadowVariable
+            --suppress=useStlAlgorithm
+            -I${CMAKE_CURRENT_SOURCE_DIR}/include
+            -DFU_ENABLE_NUMA=1
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/c
+        COMMENT "Running cppcheck static analysis"
+    )
+endif()
+
+find_program(CLANG_TIDY_EXECUTABLE clang-tidy)
+if(CLANG_TIDY_EXECUTABLE)
+    add_custom_target(
+        clang-tidy
+        COMMAND ${CLANG_TIDY_EXECUTABLE} 
+            --config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy
+            --quiet
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/c/*.cpp
+            --
+            -I${CMAKE_CURRENT_SOURCE_DIR}/include
+            -std=c++17
+        COMMENT "Running clang-tidy static analysis"
+    )
+endif()
+
 # Tests & benchmarking scripts
 include(CTest)
 if (BUILD_TESTING)

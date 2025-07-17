@@ -438,6 +438,14 @@ cmake --build build_debug --config Debug        # build with Debug symbols
 build_debug/fork_union_test_cpp20               # run a single test executable
 ```
 
+To run static analysis:
+
+```bash
+sudo apt install cppcheck clang-tidy
+cmake --build build_debug --target cppcheck     # detects bugs & undefined behavior
+cmake --build build_debug --target clang-tidy   # suggest code improvements
+```
+
 To include NUMA, Huge Pages, and other optimizations on Linux, make sure to install dependencies:
 
 ```bash
