@@ -471,7 +471,7 @@ class unique_padded_buffer {
     }
 
   public:
-    unique_padded_buffer() = default;
+    unique_padded_buffer() noexcept = default;
 
     explicit unique_padded_buffer(allocator_t const &alloc, std::size_t bytes_per_object = sizeof(object_t)) noexcept
         : bytes_per_object_(bytes_per_object), allocator_(alloc) {}
@@ -638,8 +638,8 @@ struct indexed_split {
     }
 
     inline indexed_range_t operator[](index_t const i) const noexcept {
-        index_t const begin = quotient_ * i + (i < remainder_ ? i : remainder_);
-        index_t const count = quotient_ + (i < remainder_ ? 1 : 0);
+        index_t const begin = static_cast<index_t>(quotient_ * i + (i < remainder_ ? i : remainder_));
+        index_t const count = static_cast<index_t>(quotient_ + (i < remainder_ ? 1 : 0));
         return {begin, count};
     }
 
@@ -1501,8 +1501,8 @@ struct x86_pause_t {
  */
 struct x86_tpause_t {
     inline void operator()() const noexcept {
-        constexpr std::uint64_t cycles_per_us = 3 * 1000; // ? Around 3K cycles per microsecond
-        constexpr std::uint32_t sleep_level = 0;          // ? The deepest "C0.2" state
+        constexpr std::uint64_t cycles_per_us = 3ull * 1000ull; // ? Around 3K cycles per microsecond
+        constexpr std::uint32_t sleep_level = 0;                // ? The deepest "C0.2" state
 
         // Now we need to fetch the current time in cycles, add a delay, and sleep until that time is reached.
         // Using intrinsics from `<x86intrin.h>` it may look like:
@@ -2198,6 +2198,10 @@ struct numa_topology {
 
 using numa_topology_t = numa_topology<>;
 
+static constexpr std::size_t page_size_4k = 4ull * 1024ull;                       // 4 KB
+static constexpr std::size_t page_size_2m_k = 2ull * 1024ull * 1024ull;           // 2 MB
+static constexpr std::size_t page_size_1g_k = 1ull * 1024ull * 1024ull * 1024ull; // 1 GB
+
 /**
  *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
  *  @retval true if binding succeeded, false otherwise.
@@ -2242,11 +2246,9 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
 
     // Make sure the page size makes sense for Linux
     int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
-    else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_2MB); }
-    else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) {
-        mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_1GB);
-    }
+    if (page_size_bytes == page_size_4k) { mmap_flags |= MAP_HUGETLB; }
+    else if (page_size_bytes == page_size_2m_k) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_2MB); }
+    else if (page_size_bytes == page_size_1g_k) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_1GB); }
     else { return nullptr; } // ! Unsupported page size
 
     // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
@@ -2349,12 +2351,12 @@ struct linux_numa_allocator {
         size_type const size_bytes = size * sizeof(value_type);
 
         // Try 1 GB Huge Pages, for buffers larger than 2 GB
-        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
-            if (auto result = allocate_at_least(size, 1u * 1024u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_1g_k))
+            if (auto result = allocate_at_least(size, page_size_1g_k); result) return result;
 
         // Try 2 MB Huge Pages, for buffers larger than 4 MB
-        if (size_bytes >= 4u * 1024u * 1024u)
-            if (auto result = allocate_at_least(size, 2u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_2m_k))
+            if (auto result = allocate_at_least(size, page_size_2m_k); result) return result;
 
         return allocate_at_least(size, default_page_size_);
     }
@@ -2371,12 +2373,12 @@ struct linux_numa_allocator {
         size_type const size_bytes = size * sizeof(value_type);
 
         // Try 1 GB Huge Pages, for buffers larger than 2 GB
-        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
-            if (auto result = allocate(size, 1u * 1024u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_1g_k))
+            if (auto result = allocate(size, page_size_1g_k); result) return result;
 
         // Try 2 MB Huge Pages, for buffers larger than 4 MB
-        if (size_bytes >= 4u * 1024u * 1024u)
-            if (auto result = allocate(size, 2u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_2m_k))
+            if (auto result = allocate(size, page_size_2m_k); result) return result;
 
         return allocate(size, default_page_size_);
     }
@@ -2646,7 +2648,7 @@ struct linux_colocated_pool {
         for (thread_index_t i = use_caller_thread; i < threads; ++i) {
 
             pthread_t pthread_handle;
-            int creation_result = ::pthread_create(&pthread_handle, NULL, &_posix_worker_loop, this);
+            int creation_result = ::pthread_create(&pthread_handle, nullptr, &_posix_worker_loop, this);
             pthreads_[i].handle.store(pthread_handle, std::memory_order_relaxed);
             pthreads_[i].id.store(-1, std::memory_order_relaxed);
             pthreads_[i].core_id = -1; // ? Not pinned yet
@@ -3066,11 +3068,15 @@ struct linux_colocated_pool {
                                                         : 0; // fall‑through – let snprintf clip
 
         if (digits == 0) {
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
             //  "%s:%zu" - worst‑case  (base up to 11 chars) + ":" + up‑to‑2‑digit index
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%s:%zu", base_name, index + 1);
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
         }
         else {
             int const base_len = max_visible_chars - digits - 1; // -1 for ':'
@@ -3412,7 +3418,6 @@ struct linux_distributed_pool {
         // Every NUMA pool is allocated separately
         // - the first one may be "inclusive".
         // - others are always "exclusive" to the caller thread.
-        bool const use_caller_thread = exclusivity == caller_inclusive_k;
         indexed_split<thread_index_t> threads_per_node(threads, colocations_count);
         if (!colocations[0].only().pool.try_spawn(first_node, threads_per_node[0].count, exclusivity, pin_granularity,
                                                   0, 0)) {
@@ -3908,7 +3913,7 @@ struct log_capabilities_t {
 
         // CPU Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s├─ %sCPU:%s ", colors.dim(), colors.cyan(), colors.reset());
-        int pos = static_cast<int>(std::strlen(line_buffer));
+        std::size_t pos = std::strlen(line_buffer);
 
         bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
@@ -3947,7 +3952,7 @@ struct log_capabilities_t {
 
         // Memory Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s└─ %sRAM:%s ", colors.dim(), colors.cyan(), colors.reset());
-        pos = static_cast<int>(std::strlen(line_buffer));
+        pos = std::strlen(line_buffer);
 
         bool first_mem = true;
         if (caps & capability_numa_aware_k) {

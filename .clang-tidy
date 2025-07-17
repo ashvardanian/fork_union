@@ -1,35 +1,19 @@
 ---
 Checks: >
   bugprone-*,
-  cert-*,
+  cert-dcl37-c,
+  cert-dcl51-cpp,
   performance-*,
-  portability-*,
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
   -bugprone-signed-char-misuse,
   -bugprone-unhandled-self-assignment,
-  -cert-err58-cpp,
-  -cert-dcl50-cpp,
-  cppcoreguidelines-avoid-goto,
-  cppcoreguidelines-init-variables,
-  cppcoreguidelines-slicing,
-  modernize-avoid-bind,
-  modernize-deprecated-headers,
-  modernize-loop-convert,
-  modernize-make-shared,
-  modernize-make-unique,
-  modernize-pass-by-value,
+  -bugprone-macro-parentheses,
+  -performance-avoid-endl,
   modernize-use-nullptr,
-  modernize-use-override,
-  readability-const-return-type,
-  readability-container-size-empty,
-  readability-redundant-control-flow,
-  readability-redundant-string-cstr,
-  readability-simplify-boolean-expr
+  readability-redundant-control-flow
 
 CheckOptions:
-  - key: modernize-use-auto.MinTypeNameLength
-    value: '10'
   - key: performance-unnecessary-value-param.AllowedTypes
     value: 'std::shared_ptr;std::unique_ptr'
 

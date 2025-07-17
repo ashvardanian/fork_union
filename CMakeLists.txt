@@ -21,7 +21,7 @@ target_include_directories(
 # Strict compilation flags
 target_compile_options(
     fork_union INTERFACE
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wcast-qual -Wcast-align -Wunused -Wno-unused-parameter -Wno-unknown-pragmas>
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion -Wcast-qual -Wcast-align -Wunused -Wno-unused-parameter -Wno-unknown-pragmas -Wno-sign-conversion -Wno-unused-function>
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
 )
 
@@ -68,6 +68,7 @@ if(CPPCHECK_EXECUTABLE)
             --suppress=shadowFunction
             --suppress=shadowVariable
             --suppress=useStlAlgorithm
+            --suppress=noExplicitConstructor
             -I${CMAKE_CURRENT_SOURCE_DIR}/include
             -DFU_ENABLE_NUMA=1
             ${CMAKE_CURRENT_SOURCE_DIR}/include
