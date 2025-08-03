@@ -146,7 +146,7 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define FU_MAYBE_UNUSED_ __attribute__((unused))
 #elif defined(_MSC_VER)
-#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100))
+#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100 4189))
 #else
 #define FU_MAYBE_UNUSED_
 #endif
@@ -3679,10 +3679,15 @@ struct logging_colors_t {
 #if defined(__unix__) || defined(__APPLE__)
         if (!::isatty(STDOUT_FILENO)) return;
 #endif
+#if defined(_WIN32)
+        // On Windows, assume color support is available
+        use_colors_ = true;
+#else
         char const *term = std::getenv("TERM");
         if (!term) return;
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
+#endif
     }
 
     /* ANSI style codes */
