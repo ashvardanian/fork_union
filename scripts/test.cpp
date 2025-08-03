@@ -286,7 +286,18 @@ static bool test_for_n() noexcept {
         visited[count_populated].task = prong.task;
     });
 
-    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
+    if (!contains_iota(visited)) return false;
+
+    // Make sure `for_n` is being executed on different threads.
+    std::vector<aligned_visit_t> visited_threads(pool.threads_count());
+    constexpr std::size_t invalid_task = std::numeric_limits<std::size_t>::max();
+    for (auto &visit : visited_threads) visit.task = invalid_task;
+    pool.for_n(default_parallel_tasks_k, // ? Could have been an arbitrary number `>= pool.threads_count()`
+               [&](prong_t prong) noexcept { visited_threads[prong.thread].task = prong.thread; });
+
+    return contains_iota(visited_threads);
 }
 
 /** @brief Make sure that `for_n_dynamic` is called the right number of times with the right prong IDs. */
@@ -345,8 +356,7 @@ static bool test_oversubscribed_threads() noexcept {
     return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
-/** @brief Make sure that that we can combine static and dynamic workloads over the same pool with & w/out
- * resetting. */
+/** @brief Make sure that that we can combine static & dynamic loads over the same pool with & w/out resetting. */
 template <bool should_restart_, typename make_pool_type_ = make_pool_t>
 static bool test_mixed_restart() noexcept {
 
@@ -386,8 +396,7 @@ static bool test_mixed_restart() noexcept {
  *         stopping them half-way, resetting & reinitializing, and raising exceptions.
  */
 template <typename pool_type_>
-static bool stress_test_composite(std::size_t const threads_count,
-                                  std::size_t const default_parallel_tasks_k) noexcept {
+static bool stress_test_composite(std::size_t const threads_count, std::size_t const parallel_tasks_count) noexcept {
 
     using pool_t = pool_type_;
     using index_t = typename pool_t::index_t;
@@ -398,23 +407,23 @@ static bool stress_test_composite(std::size_t const threads_count,
 
     // Make sure that no overflow happens in the static scheduling
     std::atomic<std::size_t> counter(0);
-    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
-    pool.for_n(static_cast<index_t>(default_parallel_tasks_k), [&](prong_t prong) noexcept {
+    std::vector<aligned_visit_t> visited(parallel_tasks_count);
+    pool.for_n(static_cast<index_t>(parallel_tasks_count), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parallel_tasks_k) return false;
+    if (counter.load() != parallel_tasks_count) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that no overflow happens in the dynamic scheduling
     counter = 0;
-    pool.for_n_dynamic(static_cast<index_t>(default_parallel_tasks_k), [&](prong_t prong) noexcept {
+    pool.for_n_dynamic(static_cast<index_t>(parallel_tasks_count), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
         visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parallel_tasks_k) return false;
+    if (counter.load() != parallel_tasks_count) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure the operations can be interrupted from inside the prong

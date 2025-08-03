@@ -340,7 +340,8 @@ struct prong {
     constexpr prong &operator=(prong &&) noexcept = default;
     constexpr prong &operator=(prong const &) noexcept = default;
 
-    explicit prong(task_index_t task, thread_index_t thread) noexcept : task(task), thread(thread) {}
+    explicit prong(task_index_t task_index, thread_index_t thread_index) noexcept
+        : task(task_index), thread(thread_index) {}
 
     inline operator task_index_t() const noexcept { return task; }
 };
@@ -367,8 +368,9 @@ struct colocated_prong {
     constexpr colocated_prong &operator=(colocated_prong const &) noexcept = default;
     constexpr colocated_prong &operator=(colocated_prong &&) noexcept = default;
 
-    explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
-        : task(task), thread(thread), colocation(colocation) {}
+    explicit colocated_prong(task_index_t task_index, thread_index_t thread_index,
+                             colocation_index_t colocation_index) noexcept
+        : task(task_index), thread(thread_index), colocation(colocation_index) {}
 
     colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
 
@@ -396,8 +398,8 @@ struct colocated_thread {
     constexpr colocated_thread &operator=(colocated_thread const &) noexcept = default;
     constexpr colocated_thread &operator=(colocated_thread &&) noexcept = default;
 
-    colocated_thread(thread_index_t thread, colocation_index_t colocation = 0) noexcept
-        : thread(thread), colocation(colocation) {}
+    colocated_thread(thread_index_t thread_index, colocation_index_t colocation_index = 0) noexcept
+        : thread(thread_index), colocation(colocation_index) {}
 
     inline operator thread_index_t() const noexcept { return thread; }
 };
@@ -419,8 +421,9 @@ struct allocation_result {
     size_type pages {0};        // ? Reports the number of memory pages allocated
 
     constexpr allocation_result() noexcept = default;
-    constexpr allocation_result(pointer_type ptr, size_type count, size_type bytes, size_type pages) noexcept
-        : ptr(ptr), count(count), bytes(bytes), pages(pages) {}
+    constexpr allocation_result(pointer_type ptr_address, size_type count_index, size_type bytes_index,
+                                size_type pages_index) noexcept
+        : ptr(ptr_address), count(count_index), bytes(bytes_index), pages(pages_index) {}
 
     explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
 
@@ -1559,7 +1562,7 @@ inline capabilities_t cpu_capabilities() noexcept {
 
 #if FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
-    std::uint32_t eax, ebx, ecx, edx;
+    std::uint32_t eax, __attribute__((unused)) ebx, ecx, __attribute__((unused)) edx;
 
     // CPUID leaf 7, sub-leaf 0 for structured extended feature flags
     eax = 7, ecx = 0;
@@ -2660,17 +2663,17 @@ struct linux_colocated_pool {
         // - `EPERM` if we don't have the right permissions.
         for (thread_index_t i = use_caller_thread; i < threads; ++i) {
 
-            pthread_t pthread_handle;
-            int creation_result = ::pthread_create(&pthread_handle, nullptr, &_posix_worker_loop, this);
-            pthreads_[i].handle.store(pthread_handle, std::memory_order_relaxed);
+            pthread_t new_pthread_handle;
+            int creation_result = ::pthread_create(&new_pthread_handle, nullptr, &_posix_worker_loop, this);
+            pthreads_[i].handle.store(new_pthread_handle, std::memory_order_relaxed);
             pthreads_[i].id.store(-1, std::memory_order_relaxed);
             pthreads_[i].core_id = -1; // ? Not pinned yet
 
             if (creation_result != 0) {
                 mood_.store(mood_t::die_k, std::memory_order_release);
                 for (thread_index_t j = use_caller_thread; j < i; ++j) {
-                    pthread_t pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
-                    int cancel_result = ::pthread_cancel(pthread_handle);
+                    pthread_t cancel_pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
+                    int cancel_result = ::pthread_cancel(cancel_pthread_handle);
                     assert(cancel_result == 0 && "Failed to cancel a thread");
                 }
                 reset_on_failure();
@@ -2686,8 +2689,8 @@ struct linux_colocated_pool {
                 name, name_,                                     //
                 static_cast<std::size_t>(node.first_core_id[i]), //
                 static_cast<std::size_t>(max_possible_cores));
-            pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int naming_result = ::pthread_setname_np(pthread_handle, name);
+            pthread_t naming_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            int naming_result = ::pthread_setname_np(naming_pthread_handle, name);
             assert(naming_result == 0 && "Failed to name a thread");
         }
 
@@ -2703,8 +2706,8 @@ struct linux_colocated_pool {
                 CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
 
                 // Assign the mask to the thread
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                int pin_result = ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
                 pthreads_[i].core_id = cpu;
             }
@@ -2722,8 +2725,8 @@ struct linux_colocated_pool {
 
             // Assign the same mask to all threads
             for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                int pin_result = ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
             }
         }
@@ -2835,8 +2838,8 @@ struct linux_colocated_pool {
         thread_index_t const threads = pthreads_.size();
         for (thread_index_t i = use_caller_thread; i != threads; ++i) {
             void *returned_value = nullptr;
-            pthread_t const pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int const join_result = ::pthread_join(pthread_handle, &returned_value);
+            pthread_t const join_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            int const join_result = ::pthread_join(join_pthread_handle, &returned_value);
             assert(join_result == 0 && "Thread join failed");
         }
 
@@ -3408,8 +3411,8 @@ struct linux_distributed_pool {
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
             numa_node_t const &node = new_topology.node(colocation_index);
             numa_node_id_t const node_id = node.node_id;
-            linux_numa_allocator_t allocator {node_id};
-            unique_colocation_buffer_t colocation_padded_buffer(allocator);
+            linux_numa_allocator_t node_allocator {node_id};
+            unique_colocation_buffer_t colocation_padded_buffer(node_allocator);
             colocation_padded_buffer.try_resize(1);
             colocations[colocation_index] = std::move(colocation_padded_buffer);
         }
