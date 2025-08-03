@@ -1675,7 +1675,8 @@ struct ram_page_setting_t {
  *  @retval Socket ID (>= 0) if successful.
  *  @retval -1 if failed.
  */
-FU_MAYBE_UNUSED_ static numa_socket_id_t get_socket_id_for_core(FU_MAYBE_UNUSED_ numa_core_id_t core_id) noexcept {
+FU_MAYBE_UNUSED_ static inline numa_socket_id_t get_socket_id_for_core(
+    FU_MAYBE_UNUSED_ numa_core_id_t core_id) noexcept {
 
     int socket_id = -1;
 
@@ -1701,7 +1702,7 @@ FU_MAYBE_UNUSED_ static numa_socket_id_t get_socket_id_for_core(FU_MAYBE_UNUSED_
  *  @retval The size of a memory page in bytes, typically 4096 on most systems.
  *  @note On Linux, this is the system page size, which may differ from Huge Pages sizes.
  */
-static std::size_t get_ram_page_size() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
     return static_cast<std::size_t>(::numa_pagesize());
 #elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
@@ -1716,7 +1717,7 @@ static std::size_t get_ram_page_size() noexcept {
  *  @retval Total system RAM in bytes, or 0 if detection fails.
  *  @note This function provides cross-platform detection of total physical memory.
  */
-FU_MAYBE_UNUSED_ static std::size_t get_ram_total_volume() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_total_volume() noexcept {
 #if defined(__linux__)
     // On Linux, read from /proc/meminfo
     FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
@@ -2222,7 +2223,8 @@ static constexpr std::size_t page_size_1g_k = 1ull * 1024ull * 1024ull * 1024ull
  *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
  *  @retval true if binding succeeded, false otherwise.
  */
-FU_MAYBE_UNUSED_ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline bool linux_numa_bind(void *ptr, std::size_t size_bytes,
+                                                    numa_node_id_t node_id) noexcept {
 #if FU_ENABLE_NUMA
     // Pin the memory - that may require an extra allocation for `node_mask` on some systems
     ::nodemask_t node_mask;
@@ -2254,8 +2256,8 @@ FU_MAYBE_UNUSED_ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, 
  *  @retval nullptr if allocation failed or the page size is unsupported.
  *  @retval pointer to the allocated memory on success.
  */
-FU_MAYBE_UNUSED_ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes,
-                                                  numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes,
+                                                         numa_node_id_t node_id) noexcept {
     assert(node_id >= 0 && "NUMA node ID must be non-negative");
     assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
 
@@ -2288,7 +2290,7 @@ FU_MAYBE_UNUSED_ static void *linux_numa_allocate(std::size_t size_bytes, std::s
 #endif // FU_ENABLE_NUMA
 }
 
-FU_MAYBE_UNUSED_ static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+FU_MAYBE_UNUSED_ static inline void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
     assert(ptr != nullptr && "Pointer must not be null");
     assert(size_bytes > 0 && "Size must be greater than zero");
 #if FU_ENABLE_NUMA
