@@ -36,6 +36,7 @@ build/
 build_test/
 build_debug/
 build_release/
+build_artifacts/
 Testing/
 
 # Rust build artifacts

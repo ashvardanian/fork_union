@@ -59,11 +59,7 @@ target_compile_options(
               -Wold-style-cast
               -Woverloaded-virtual
               -Wsign-promo
-              -Wduplicated-cond
-              -Wduplicated-branches
-              -Wlogical-op
               -Wno-null-dereference
-              -Wuseless-cast
               -Wdouble-promotion>
               $<$<AND:$<CXX_COMPILER_ID:GNU,Clang>,$<CONFIG:Release,RelWithDebInfo>>:-Wno-unused-variable>
               # Additional GCC-specific warnings
