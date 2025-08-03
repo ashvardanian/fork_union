@@ -1369,8 +1369,8 @@ class basic_pool {
         epoch_index_t last_epoch = 0;
         while (true) {
             // Wait for either: a new ticket or a stop flag
-            epoch_index_t new_epoch;
-            mood_t mood;
+            epoch_index_t new_epoch;       // Will definitely be initialized in the loop
+            mood_t mood = mood_t::grind_k; // May not be initialized in the loop
             micro_yield_t micro_yield;
             while ((new_epoch = epoch_.load(std::memory_order_acquire)) == last_epoch &&
                    (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
