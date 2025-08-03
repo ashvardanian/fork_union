@@ -1445,10 +1445,11 @@ struct arm64_yield_t {
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
  */
-#pragma GCC push_options
-#pragma GCC target("arch=armv8-a+wfxt")
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("arch=armv8-a+wfxt")
 #endif
 
 struct arm64_wfet_t {
@@ -1476,9 +1477,10 @@ struct arm64_wfet_t {
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
 #endif // FU_DETECT_ARCH_ARM64_
@@ -1489,10 +1491,11 @@ struct x86_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#pragma GCC push_options
-#pragma GCC target("waitpkg")
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("waitpkg"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("waitpkg")
 #endif
 
 /**
@@ -1531,9 +1534,10 @@ struct x86_tpause_t {
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
 #endif // FU_DETECT_ARCH_X86_64_
