@@ -1318,7 +1318,7 @@ class basic_pool {
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
      *  @return Same value as `threads_count()`, as we only support one colocation.
      */
-    thread_index_t threads_count(index_t colocation_index) const noexcept {
+    thread_index_t threads_count(FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return threads_count();
     }
@@ -1328,7 +1328,7 @@ class basic_pool {
      *  @return Same value as `global_thread_index`, as we only support one colocation.
      */
     constexpr thread_index_t thread_local_index(thread_index_t global_thread_index,
-                                                index_t colocation_index) const noexcept {
+                                                FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return global_thread_index;
     }
@@ -1670,7 +1670,7 @@ struct ram_page_setting_t {
  *  @retval Socket ID (>= 0) if successful.
  *  @retval -1 if failed.
  */
-static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
+static numa_socket_id_t get_socket_id_for_core(FU_MAYBE_UNUSED_ numa_core_id_t core_id) noexcept {
 
     int socket_id = -1;
 
@@ -1711,7 +1711,7 @@ static std::size_t get_ram_page_size() noexcept {
  *  @retval Total system RAM in bytes, or 0 if detection fails.
  *  @note This function provides cross-platform detection of total physical memory.
  */
-static std::size_t get_ram_total_volume() noexcept {
+FU_MAYBE_UNUSED_ static std::size_t get_ram_total_volume() noexcept {
 #if defined(__linux__)
     // On Linux, read from /proc/meminfo
     FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
@@ -2677,7 +2677,7 @@ struct linux_colocated_pool {
                 mood_.store(mood_t::die_k, std::memory_order_release);
                 for (thread_index_t j = use_caller_thread; j < i; ++j) {
                     pthread_t cancel_pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
-                    int cancel_result = ::pthread_cancel(cancel_pthread_handle);
+                    FU_MAYBE_UNUSED_ int cancel_result = ::pthread_cancel(cancel_pthread_handle);
                     assert(cancel_result == 0 && "Failed to cancel a thread");
                 }
                 reset_on_failure();
@@ -2694,7 +2694,7 @@ struct linux_colocated_pool {
                 static_cast<std::size_t>(node.first_core_id[i]), //
                 static_cast<std::size_t>(max_possible_cores));
             pthread_t naming_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int naming_result = ::pthread_setname_np(naming_pthread_handle, name);
+            FU_MAYBE_UNUSED_ int naming_result = ::pthread_setname_np(naming_pthread_handle, name);
             assert(naming_result == 0 && "Failed to name a thread");
         }
 
@@ -2711,7 +2711,8 @@ struct linux_colocated_pool {
 
                 // Assign the mask to the thread
                 pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
                 pthreads_[i].core_id = cpu;
             }
@@ -2730,7 +2731,8 @@ struct linux_colocated_pool {
             // Assign the same mask to all threads
             for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
                 pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
             }
         }
@@ -2843,7 +2845,7 @@ struct linux_colocated_pool {
         for (thread_index_t i = use_caller_thread; i != threads; ++i) {
             void *returned_value = nullptr;
             pthread_t const join_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int const join_result = ::pthread_join(join_pthread_handle, &returned_value);
+            FU_MAYBE_UNUSED_ int const join_result = ::pthread_join(join_pthread_handle, &returned_value);
             assert(join_result == 0 && "Thread join failed");
         }
 
@@ -2993,10 +2995,10 @@ struct linux_colocated_pool {
         std::size_t const cpu_set_size = CPU_ALLOC_SIZE(static_cast<unsigned long>(max_possible_cores));
         CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
         for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
-        int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
+        FU_MAYBE_UNUSED_ int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
         assert(pin_result == 0 && "Failed to reset the caller thread's affinity");
         CPU_FREE(cpu_set_ptr);
-        int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
+        FU_MAYBE_UNUSED_ int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
         assert(spread_result == 0 && "Failed to reset the caller thread's NUMA node affinity");
     }
 
