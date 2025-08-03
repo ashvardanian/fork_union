@@ -18,8 +18,8 @@ template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t,
 template class fu::basic_pool<>;
 
 #if FU_ENABLE_NUMA
-template class fu::linux_colocated_pool<>;
-template class fu::linux_distributed_pool<>;
+template struct fu::linux_colocated_pool<>;
+template struct fu::linux_distributed_pool<>;
 #endif
 
 template <typename index_type_ = std::uint8_t>
