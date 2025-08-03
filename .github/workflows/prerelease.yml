@@ -1,0 +1,164 @@
+name: Pre-Release
+
+on:
+  push:
+    branches: ["main-dev"]
+  pull_request:
+    branches: ["main-dev"]
+
+env:
+  GH_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+
+jobs:
+  versioning:
+    name: Update Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run TinySemVer
+        uses: ashvardanian/tinysemver@v2.1.1
+        with:
+          verbose: "true"
+          version-file: "VERSION"
+          update-version-in: |
+            CMakeLists.txt:^\s*VERSION (\d+\.\d+\.\d+)
+            Cargo.toml:^version = "(\d+\.\d+\.\d+)"
+          update-major-version-in: |
+            include/fork_union.hpp:^#define FORK_UNION_VERSION_MAJOR (\d+)
+          update-minor-version-in: |
+            include/fork_union.hpp:^#define FORK_UNION_VERSION_MINOR (\d+)
+          update-patch-version-in: |
+            include/fork_union.hpp:^#define FORK_UNION_VERSION_PATCH (\d+)
+          dry-run: "true"
+
+  test_ubuntu_gcc:
+    name: Ubuntu (GCC 14)
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build C/C++
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential libomp-dev gcc-12 g++-12
+          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build_artifacts --config RelWithDebInfo
+      - name: Test C++
+        run: |
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
+
+      - name: Set up Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc -vV
+      - name: Build Rust
+        run: cargo build
+      - name: Test Rust
+        run: cargo test
+
+  test_ubuntu_clang:
+    name: Ubuntu (Clang 18)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+        # C/C++
+        # Clang 16 isn't available from default repos on Ubuntu 22.04, so we have to install it manually
+      - name: Build C/C++
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential clang
+          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build_artifacts --config RelWithDebInfo
+      - name: Test C++
+        run: |
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
+
+      - name: Set up Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc -vV
+      - name: Build Rust
+        run: cargo build
+      - name: Test Rust
+        run: cargo test
+
+  test_macos:
+    name: MacOS
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build C/C++
+        run: |
+          brew update
+          brew install cmake
+          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build_artifacts --config RelWithDebInfo
+      - name: Test C++
+        run: |
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
+
+      - name: Set up Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc -vV
+      - name: Build Rust
+        run: cargo build
+      - name: Test Rust
+        run: cargo test
+
+  test_windows:
+    name: Windows
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build C/C++
+        run: |
+          choco install cmake
+          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build_artifacts --config RelWithDebInfo
+      - name: List build artifacts
+        run: Get-ChildItem -Recurse .\build_artifacts
+      - name: Test C++
+        run: |
+          .\build_artifacts\fork_union_test_cpp17.exe
+          .\build_artifacts\fork_union_test_cpp20.exe
+
+      - name: Set up Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc -vV
+      - name: Build Rust
+        run: cargo build
+      - name: Test Rust
+        run: cargo test

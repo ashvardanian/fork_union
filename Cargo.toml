@@ -1,14 +1,43 @@
 [package]
 name = "fork_union"
-description = "Minimalistic scoped thread-pool designed for SIMT-style 'Fork-Join' parallelism"
-version = "0.3.3"
+description = "Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library"
+version = "2.2.0"
 edition = "2021"
 authors = ["Ash Vardanian"]
 license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/fork_union"
 
 [lib]
-path = "fork_union.rs"
+name = "fork_union"
+path = "rust/lib.rs"
 
-[dependencies]
-crossbeam-utils = "0.8.21"
+[build-dependencies]
+cc = "1.2.29"
+
+[features]
+default = ["std"]
+std = []
+
+[profile.release]
+opt-level = 3     # Corresponds to -O3
+lto = true        # Enables Link Time Optimization for further optimizations
+codegen-units = 1 # May increase compilation time but optimizes further
+rpath = false     # On some systems, setting this to false can help with optimizations
+
+[[example]]
+name = "nbody"
+path = "scripts/nbody.rs"
+test = false
+bench = false
+
+[[example]]
+name = "search"
+path = "scripts/search.rs"
+test = false
+bench = false
+
+[dev-dependencies]
+rayon = "1.10"
+rand = "0.9"
+tokio = { version = "1.46.1", features = ["rt-multi-thread", "sync"] }
+simsimd = "6.5.0"

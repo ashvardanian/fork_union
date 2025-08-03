@@ -33,8 +33,10 @@
 
 # Build directories
 build/
+build_test/
 build_debug/
 build_release/
+Testing/
 
 # Rust build artifacts
 Cargo.lock

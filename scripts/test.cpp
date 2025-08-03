@@ -5,49 +5,228 @@
 
 #include <fork_union.hpp>
 
+/* Namespaces, constants, and explicit type instantiations. */
 namespace fu = ashvardanian::fork_union;
 
-constexpr std::size_t default_parts = 10000; // 10K
+using fu32_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
+using fu16_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
+using fu8_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
 
-static bool test_try_spawn_success() noexcept {
-    fu::thread_pool_t pool;
-    std::size_t const count_threads = std::thread::hardware_concurrency();
-    if (!pool.try_spawn(count_threads)) return false;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
+template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
+template class fu::basic_pool<>;
+
+#if FU_ENABLE_NUMA
+template class fu::linux_colocated_pool<>;
+template class fu::linux_distributed_pool<>;
+#endif
+
+template <typename index_type_ = std::uint8_t>
+bool test_indexed_split() noexcept {
+    std::size_t max_tasks = std::numeric_limits<index_type_>::max();
+    std::size_t max_threads = std::numeric_limits<index_type_>::max();
+    std::vector<bool> visits(max_tasks);
+
+    for (std::size_t threads = 1; threads < max_threads; ++threads) {
+        for (std::size_t tasks = 0; tasks < max_tasks; ++tasks) {
+
+            // Reset visits for each test case
+            std::fill_n(visits.begin(), max_tasks, false);
+
+            fu::indexed_split<index_type_> split {static_cast<index_type_>(tasks), static_cast<index_type_>(threads)};
+            for (std::size_t thread = 0; thread < threads; ++thread) {
+                auto subrange = split[static_cast<index_type_>(thread)];
+                for (std::size_t task = subrange.first; task < subrange.first + subrange.count; ++task) {
+                    if (task >= tasks) return false; // Out of bounds
+                    if (visits[task]) return false;  // Already visited
+                    visits[task] = true;             // Mark as visited
+                }
+            }
+        }
+    }
+
     return true;
 }
 
+template <typename index_type_ = std::uint8_t>
+bool test_coprime_permutation() noexcept {
+    constexpr std::size_t max_tasks = std::numeric_limits<index_type_>::max();
+
+    for (std::size_t start = 0; start < max_tasks; ++start) {
+        for (std::size_t end = start + 1; end < max_tasks; ++end) {
+            for (std::size_t seed = 0; seed < max_tasks; ++seed) {
+
+                // Create a coprime permutation and make sure it only covers the range [start, end)
+                index_type_ const range_size = static_cast<index_type_>(end - start);
+                fu::coprime_permutation_range<index_type_> permutation(static_cast<index_type_>(start), range_size,
+                                                                       static_cast<index_type_>(seed));
+
+                std::size_t count_matches = 0;
+                for (auto value : permutation) {
+                    if (value < start || value >= end) {
+                        return false; // Out of range
+                    }
+                    count_matches++;
+                }
+                if (count_matches != range_size) {
+                    return false; // Not all values in the range were covered
+                }
+            }
+        }
+    }
+    return true;
+}
+
+constexpr std::size_t default_parallel_tasks_k = 10000; // 10K
+
+struct make_pool_t {
+    fu::basic_pool_t construct() const noexcept { return fu::basic_pool_t(); }
+    std::size_t scope(std::size_t oversubscription = 1) const noexcept {
+        return std::thread::hardware_concurrency() * oversubscription;
+    }
+};
+
+#if FU_ENABLE_NUMA
+static fu::numa_topology_t numa_topology;
+struct make_linux_colocated_pool_t {
+    fu::linux_colocated_pool_t construct() const noexcept { return fu::linux_colocated_pool_t("fork_union"); }
+    fu::numa_node_t scope(std::size_t = 0) const noexcept { return numa_topology.node(0); }
+};
+struct make_linux_distributed_pool_t {
+    fu::linux_distributed_pool_t construct() const noexcept { return fu::linux_distributed_pool_t("fork_union"); }
+    fu::numa_topology_t const &scope(std::size_t = 0) const noexcept { return numa_topology; }
+};
+#endif
+
 static bool test_try_spawn_zero() noexcept {
-    fu::thread_pool_t pool;
+    fu::basic_pool_t pool;
     return !pool.try_spawn(0u);
 }
 
-/** @brief Make sure that `broadcast` is called from each thread. */
-static bool test_broadcast() noexcept {
-    std::size_t const count_threads = std::thread::hardware_concurrency();
-    std::vector<std::atomic<bool>> visited(count_threads);
-    {
-        fu::thread_pool_t pool;
-        if (!pool.try_spawn(count_threads)) return false;
-        pool.broadcast([&](std::size_t const thread_index) noexcept {
-            visited[thread_index].store(true, std::memory_order_relaxed);
-        });
-    }
-    for (std::size_t i = 0; i < count_threads; ++i)
+template <typename make_pool_type_ = make_pool_t>
+static bool test_try_spawn_success() noexcept {
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+    return true;
+}
+
+/** @brief Make sure that `for_threads` is called from each thread. */
+template <typename make_pool_type_ = make_pool_t>
+static bool test_for_threads() noexcept {
+
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    std::vector<std::atomic<bool>> visited(pool.threads_count());
+    pool.for_threads([&](std::size_t const thread_index) noexcept { //
+        visited[thread_index].store(true, std::memory_order_relaxed);
+    });
+
+    for (std::size_t i = 0; i < pool.threads_count(); ++i)
         if (!visited[i]) return false;
     return true;
 }
 
+/** @brief Make sure that `unsafe_for_threads` is called from each thread. */
+template <typename make_pool_type_ = make_pool_t>
+static bool test_unsafe_for_threads() noexcept {
+
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    std::vector<std::atomic<bool>> visited(pool.threads_count());
+    auto on_each_thread = [&](std::size_t const thread_index) noexcept {
+        visited[thread_index].store(true, std::memory_order_relaxed);
+    };
+    pool.unsafe_for_threads(on_each_thread);
+    pool.unsafe_join();
+
+    for (std::size_t i = 0; i < pool.threads_count(); ++i)
+        if (!visited[i]) return false;
+    return true;
+}
+
+/** @brief Shows how to control multiple thread-pools from the same main thread. */
+template <typename make_pool_type_ = make_pool_t>
+static bool test_exclusivity() noexcept {
+
+    auto maker = make_pool_type_ {};
+
+    // First try with externally defined lambdas with a clearly long lifetime:
+    {
+        auto first_pool = maker.construct();
+        auto second_pool = maker.construct();
+        if (!first_pool.try_spawn(maker.scope(), fu::caller_inclusive_k)) return false;
+        if (!second_pool.try_spawn(maker.scope(), fu::caller_exclusive_k)) return false;
+
+        std::size_t const first_size = first_pool.threads_count();
+        std::size_t const second_size = second_pool.threads_count();
+        std::size_t const total_size = first_size + second_size;
+        std::vector<std::atomic<bool>> visited(total_size);
+
+        auto do_second = [&](std::size_t const thread_index) noexcept {
+            visited[first_size + thread_index].store(true, std::memory_order_relaxed);
+        };
+        auto do_first = [&](std::size_t const thread_index) noexcept {
+            visited[thread_index].store(true, std::memory_order_relaxed);
+        };
+
+        // Repeat the same logic a few times and check for correctness:
+        for (std::size_t iteration = 0; iteration < 3; ++iteration) {
+            auto join_second = second_pool.for_threads(do_second);
+            first_pool.for_threads(do_first);
+            join_second.join();
+
+            // Validate:
+            for (std::size_t i = 0; i < total_size; ++i)
+                if (!visited[i]) return false;
+        }
+    }
+
+    // Now do the same with inline lambdas, where they should be re-packaged into returned objects:
+    {
+        auto first_pool = maker.construct();
+        auto second_pool = maker.construct();
+        if (!first_pool.try_spawn(maker.scope(), fu::caller_inclusive_k)) return false;
+        if (!second_pool.try_spawn(maker.scope(), fu::caller_exclusive_k)) return false;
+
+        std::size_t const first_size = first_pool.threads_count();
+        std::size_t const second_size = second_pool.threads_count();
+        std::size_t const total_size = first_size + second_size;
+        std::vector<std::atomic<bool>> visited(total_size);
+
+        auto join_second = second_pool.for_threads([&](std::size_t const thread_index) noexcept {
+            visited[first_size + thread_index].store(true, std::memory_order_relaxed);
+        });
+        first_pool.for_threads([&](std::size_t const thread_index) noexcept {
+            visited[thread_index].store(true, std::memory_order_relaxed);
+        });
+        join_second.join();
+
+        // Validate:
+        for (std::size_t i = 0; i < total_size; ++i)
+            if (!visited[i]) return false;
+    }
+    return true;
+}
+
 /** @brief Make sure that `for_n` is called from each thread. */
+template <typename make_pool_type_ = make_pool_t>
 static bool test_uncomfortable_input_size() noexcept {
-    std::size_t const count_threads = std::thread::hardware_concurrency();
 
-    fu::thread_pool_t pool;
-    if (!pool.try_spawn(count_threads)) return false;
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
 
-    for (std::size_t input_size = 0; input_size < count_threads; ++input_size) {
+    std::size_t const max_input_size = pool.threads_count() * 3; // Arbitrary size, larger than the number of threads
+    for (std::size_t input_size = 0; input_size <= max_input_size; ++input_size) {
         std::atomic<bool> out_of_bounds(false);
-        for_n(pool, input_size, [&](std::size_t const task_index) noexcept {
-            if (task_index >= count_threads) out_of_bounds.store(true, std::memory_order_relaxed);
+        pool.for_n(input_size, [&](std::size_t const task) noexcept {
+            if (task >= input_size) out_of_bounds.store(true, std::memory_order_relaxed);
         });
         if (out_of_bounds.load(std::memory_order_relaxed)) return false;
     }
@@ -57,11 +236,11 @@ static bool test_uncomfortable_input_size() noexcept {
 
 /** @brief Convenience structure to ensure we output match locations to independent cache lines. */
 struct alignas(fu::default_alignment_k) aligned_visit_t {
-    std::size_t task_index = 0;
-    bool operator<(aligned_visit_t const &other) const noexcept { return task_index < other.task_index; }
-    bool operator==(aligned_visit_t const &other) const noexcept { return task_index == other.task_index; }
-    bool operator!=(std::size_t other_index) const noexcept { return task_index != other_index; }
-    bool operator==(std::size_t other_index) const noexcept { return task_index == other_index; }
+    std::size_t task = 0;
+    bool operator<(aligned_visit_t const &other) const noexcept { return task < other.task; }
+    bool operator==(aligned_visit_t const &other) const noexcept { return task == other.task; }
+    bool operator!=(std::size_t other_index) const noexcept { return task != other_index; }
+    bool operator==(std::size_t other_index) const noexcept { return task == other_index; }
 };
 
 bool contains_iota(std::vector<aligned_visit_t> &visited) noexcept {
@@ -76,176 +255,255 @@ bool contains_iota(std::vector<aligned_visit_t> &visited) noexcept {
 }
 
 /** @brief Make sure that `for_n` is called the right number of times with the right prong IDs. */
+template <typename make_pool_type_ = make_pool_t>
 static bool test_for_n() noexcept {
 
     std::atomic<std::size_t> counter(0);
-    std::vector<aligned_visit_t> visited(default_parts);
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
 
-    fu::thread_pool_t pool;
-    std::size_t const count_threads = std::thread::hardware_concurrency();
-    if (!pool.try_spawn(count_threads)) return false;
-    for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    using pool_t = decltype(pool);
+    using prong_t = typename pool_t::prong_t;
+
+    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = prong.task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    if (counter.load() != default_parts) return false;
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = prong.task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
+    if (!contains_iota(visited)) return false;
+
+    // Make sure `for_n` is being executed on different threads.
+    std::vector<aligned_visit_t> visited_threads(pool.threads_count());
+    constexpr std::size_t invalid_task = std::numeric_limits<std::size_t>::max();
+    for (auto &visit : visited_threads) visit.task = invalid_task;
+    pool.for_n(default_parallel_tasks_k, // ? Could have been an arbitrary number `>= pool.threads_count()`
+               [&](prong_t prong) noexcept { visited_threads[prong.thread].task = prong.thread; });
+
+    return contains_iota(visited_threads);
 }
 
 /** @brief Make sure that `for_n_dynamic` is called the right number of times with the right prong IDs. */
+template <typename make_pool_type_ = make_pool_t>
 static bool test_for_n_dynamic() noexcept {
 
-    fu::thread_pool_t pool;
-    std::size_t const count_threads = std::thread::hardware_concurrency();
-    if (!pool.try_spawn(count_threads)) return false;
-    std::vector<aligned_visit_t> visited(default_parts);
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    if (counter.load() != default_parts) return false;
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
 /** @brief Stress-tests the implementation by oversubscribing the number of threads. */
-static bool test_oversubscribed_unbalanced_threads() noexcept {
+template <typename make_pool_type_ = make_pool_t>
+static bool test_oversubscribed_threads() noexcept {
     constexpr std::size_t oversubscription = 3;
 
-    fu::thread_pool_t pool;
-    std::size_t const count_threads = std::thread::hardware_concurrency() * oversubscription;
-    if (!pool.try_spawn(count_threads)) return false;
-    std::vector<aligned_visit_t> visited(default_parts);
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope(oversubscription))) return false;
+
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
     thread_local volatile std::size_t some_local_work = 0;
-    for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // Perform some weird amount of work, that is not very different between consecutive tasks.
-        for (std::size_t i = 0; i != task_index % oversubscription; ++i) some_local_work = some_local_work + i * i;
+        for (std::size_t i = 0; i != task % oversubscription; ++i) some_local_work = some_local_work + i * i;
 
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
-    // Make sure that all prong IDs are unique and form the full range of [0, `default_parts`).
-    return counter.load() == default_parts && contains_iota(visited);
+    // Make sure that all prong IDs are unique and form the full range of [0, `default_parallel_tasks_k`).
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
-/** @brief Make sure that that we can combine static and dynamic workloads over the same pool with & w/out resetting. */
-template <bool should_restart_>
+/** @brief Make sure that that we can combine static & dynamic loads over the same pool with & w/out resetting. */
+template <bool should_restart_, typename make_pool_type_ = make_pool_t>
 static bool test_mixed_restart() noexcept {
 
-    fu::thread_pool_t pool;
-    std::size_t const count_threads = std::thread::hardware_concurrency();
-    if (!pool.try_spawn(count_threads)) return false;
-    std::vector<aligned_visit_t> visited(default_parts);
+    auto maker = make_pool_type_ {};
+    auto pool = maker.construct();
+    if (!pool.try_spawn(maker.scope())) return false;
+
+    std::vector<aligned_visit_t> visited(default_parallel_tasks_k);
     std::atomic<std::size_t> counter(0);
 
-    fu::for_n(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != default_parallel_tasks_k) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that the pool can be reset and reused
     if (should_restart_) {
-        pool.stop_and_reset();
-        if (!pool.try_spawn(count_threads)) return false;
+        pool.terminate();
+        if (!pool.try_spawn(maker.scope())) return false;
     }
 
     // Make sure repeated calls to `for_n` work
     counter = 0;
-    fu::for_n_dynamic(pool, default_parts, [&](std::size_t const task_index) noexcept {
+    pool.for_n_dynamic(default_parallel_tasks_k, [&](std::size_t const task) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = task_index;
+        visited[count_populated].task = task;
     });
 
-    return counter.load() == default_parts && contains_iota(visited);
+    return counter.load() == default_parallel_tasks_k && contains_iota(visited);
 }
 
 /** @brief Hard complex example, involving launching multiple tasks, including static and dynamic ones,
  *         stopping them half-way, resetting & reinitializing, and raising exceptions.
  */
 template <typename pool_type_>
-static bool stress_test_composite(std::size_t const threads_count, std::size_t const default_parts) noexcept {
+static bool stress_test_composite(std::size_t const threads_count, std::size_t const parallel_tasks_count) noexcept {
 
     using pool_t = pool_type_;
     using index_t = typename pool_t::index_t;
     using prong_t = fu::prong<index_t>;
 
     pool_t pool;
-    if (!pool.try_spawn(threads_count)) return false;
+    if (!pool.try_spawn(static_cast<index_t>(threads_count))) return false;
 
     // Make sure that no overflow happens in the static scheduling
     std::atomic<std::size_t> counter(0);
-    std::vector<aligned_visit_t> visited(default_parts);
-    fu::for_n(pool, default_parts, [&](prong_t prong) noexcept {
+    std::vector<aligned_visit_t> visited(parallel_tasks_count);
+    pool.for_n(static_cast<index_t>(parallel_tasks_count), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = prong.task_index;
+        visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != parallel_tasks_count) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure that no overflow happens in the dynamic scheduling
     counter = 0;
-    fu::for_n_dynamic(pool, default_parts, [&](prong_t prong) noexcept {
+    pool.for_n_dynamic(static_cast<index_t>(parallel_tasks_count), [&](prong_t prong) noexcept {
         // ? Relax the memory order, as we don't care about the order of the results, will sort 'em later
         std::size_t const count_populated = counter.fetch_add(1, std::memory_order_relaxed);
-        visited[count_populated].task_index = prong.task_index;
+        visited[count_populated].task = prong.task;
     });
-    if (counter.load() != default_parts) return false;
+    if (counter.load() != parallel_tasks_count) return false;
     if (!contains_iota(visited)) return false;
 
     // Make sure the operations can be interrupted from inside the prong
     return true;
 }
 
-int main() {
+/**
+ *  @brief Enhanced NUMA topology logging function using the logger class.
+ */
+void log_numa_topology() noexcept {
+    fu::logging_colors_t colors;
+#if FU_ENABLE_NUMA
+    // Harvest topology
+    if (!numa_topology.try_harvest()) {
+        std::fprintf(stderr, "%sX Failed to harvest NUMA topology%s\n", colors.bold_red(), colors.reset());
+        std::exit(EXIT_FAILURE);
+    }
 
+    fu::capabilities_t cpu_caps = fu::cpu_capabilities();
+    fu::capabilities_t ram_caps = fu::ram_capabilities();
+
+    // Log topology and capabilities
+    fu::log_numa_topology_t {}(numa_topology, colors);
+    fu::log_capabilities_t {}(static_cast<fu::capabilities_t>(cpu_caps | ram_caps), colors);
+
+#else
+    std::printf("%sNUMA support not compiled in%s\n", colors.dim(), colors.reset());
+#endif // FU_ENABLE_NUMA
+}
+
+int main(void) {
+
+    std::printf("Welcome to the Fork Union library test suite!\n");
+    log_numa_topology();
+
+    std::printf("Starting unit tests...\n");
     using test_func_t = bool() /* noexcept */;
     struct {
         char const *name;
         test_func_t *function;
     } const unit_tests[] = {
-        {"`try_spawn` normal", test_try_spawn_success},                                     //
-        {"`try_spawn` zero threads", test_try_spawn_zero},                                  //
-        {"`broadcast` dispatch", test_broadcast},                                           //
-        {"`for_n` for uncomfortable input size", test_uncomfortable_input_size},            //
-        {"`for_n` static scheduling", test_for_n},                                          //
-        {"`for_n_dynamic` dynamic scheduling", test_for_n_dynamic},                         //
-        {"`for_n_dynamic` oversubscribed threads", test_oversubscribed_unbalanced_threads}, //
-        {"`stop_and_reset` avoided", test_mixed_restart<false>},                            //
-        {"`stop_and_reset` and re-spawn", test_mixed_restart<true>},                        //
+        // Helpers
+        {"`indexed_split` helpers", test_indexed_split},            //
+        {"`coprime_permutation` ranges", test_coprime_permutation}, //
+        // Actual thread-pools
+        {"`try_spawn` zero threads", test_try_spawn_zero},                       //
+        {"`try_spawn` normal", test_try_spawn_success},                          //
+        {"`for_threads` dispatch", test_for_threads},                            //
+        {"`unsafe_for_threads` dispatch", test_unsafe_for_threads},              //
+        {"`caller_exclusive_k` calls", test_exclusivity},                        //
+        {"`for_n` for uncomfortable input size", test_uncomfortable_input_size}, //
+        {"`for_n` static scheduling", test_for_n},                               //
+        {"`for_n_dynamic` dynamic scheduling", test_for_n_dynamic},              //
+        {"`for_n_dynamic` oversubscribed threads", test_oversubscribed_threads}, //
+        {"`terminate` avoided", test_mixed_restart<false>},                      //
+        {"`terminate` and re-spawn", test_mixed_restart<true>},                  //
+#if FU_ENABLE_NUMA
+        // Uniform Memory Access (UMA) tests for threads pinned to the same NUMA node
+        {"UMA `try_spawn` normal", test_try_spawn_success<make_linux_colocated_pool_t>},
+        {"UMA `for_threads` dispatch", test_for_threads<make_linux_colocated_pool_t>},
+        {"UMA `unsafe_for_threads` dispatch", test_unsafe_for_threads<make_linux_colocated_pool_t>},
+        {"UMA `caller_exclusive_k` calls", test_exclusivity<make_linux_colocated_pool_t>},
+        {"UMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_colocated_pool_t>},
+        {"UMA `for_n` static scheduling", test_for_n<make_linux_colocated_pool_t>},
+        {"UMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_colocated_pool_t>},
+        {"UMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_colocated_pool_t>},
+        {"UMA `terminate` avoided", test_mixed_restart<false, make_linux_colocated_pool_t>},
+        {"UMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_colocated_pool_t>},
+        // Non-Uniform Memory Access (NUMA) tests for threads addressing all NUMA nodes
+        {"NUMA `try_spawn` normal", test_try_spawn_success<make_linux_distributed_pool_t>},
+        {"NUMA `for_threads` dispatch", test_for_threads<make_linux_distributed_pool_t>},
+        {"NUMA `unsafe_for_threads` dispatch", test_unsafe_for_threads<make_linux_distributed_pool_t>},
+        {"NUMA `caller_exclusive_k` calls", test_exclusivity<make_linux_distributed_pool_t>},
+        {"NUMA `for_n` for uncomfortable input size", test_uncomfortable_input_size<make_linux_distributed_pool_t>},
+        {"NUMA `for_n` static scheduling", test_for_n<make_linux_distributed_pool_t>},
+        {"NUMA `for_n_dynamic` dynamic scheduling", test_for_n_dynamic<make_linux_distributed_pool_t>},
+        {"NUMA `for_n_dynamic` oversubscribed threads", test_oversubscribed_threads<make_linux_distributed_pool_t>},
+        {"NUMA `terminate` avoided", test_mixed_restart<false, make_linux_distributed_pool_t>},
+        {"NUMA `terminate` and re-spawn", test_mixed_restart<true, make_linux_distributed_pool_t>},
+#endif // FU_ENABLE_NUMA
     };
 
     std::size_t const total_unit_tests = sizeof(unit_tests) / sizeof(unit_tests[0]);
@@ -265,10 +523,8 @@ int main() {
     std::printf("All %zu unit tests passed\n", total_unit_tests);
 
     // Start stress-testing the implementation
+    std::printf("Starting stress tests...\n");
     std::size_t const max_cores = std::thread::hardware_concurrency();
-    using fu32_t = fu::thread_pool<std::allocator<std::thread>, std::uint32_t>;
-    using fu16_t = fu::thread_pool<std::allocator<std::thread>, std::uint16_t>;
-    using fu8_t = fu::thread_pool<std::allocator<std::thread>, std::uint8_t>;
     using stress_test_func_t = bool(std::size_t, std::size_t) /* noexcept */;
     struct {
         char const *name;

@@ -2,6 +2,12 @@
 function (set_target_properties_for_fork_union_script target_name)
     target_link_libraries(${TGT} PRIVATE fork_union)
 
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # This warning annoys us by reminding, that before GCC 4.6 the ABI for passing objects aligned to ≥32-bytes was
+        # different... but that GCC version was released in 2014, over a decade ago.
+        target_compile_options(${TGT} PRIVATE -Wno-psabi)
+    endif ()
+
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
         message(STATUS "Enabling optimizations for ${TGT}")
@@ -15,17 +21,22 @@ function (set_target_properties_for_fork_union_script target_name)
             OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
             OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
         )
-            message(STATUS "Enabling ThreadSanitizer for ${TGT}")
-            target_compile_options(${TGT} PRIVATE -g -O1)
-            target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread -fno-omit-frame-pointer)
-            target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # Using thread sanitizers caused all kinds of stalls on NUMA systems
+            # ~~~
+            # message(STATUS "Enabling ThreadSanitizer for ${TGT}")
+            # target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # ~~~
+            target_compile_options(${TGT} PRIVATE -g -O0)
+            target_compile_options(${TGT} PRIVATE -fno-omit-frame-pointer)
+            target_link_options(${TGT} PRIVATE)
         endif ()
     endif ()
 endfunction ()
 
-# Test targets for C++11, C++14, C++17, and C++20
+# Test targets for C++17 & C++20
 set(TEST_SOURCES test.cpp)
-set(CXX_STANDARDS 11 14 17 20)
+set(CXX_STANDARDS 17 20)
 foreach (STD IN LISTS CXX_STANDARDS)
     # Derive a unique target name
     set(TGT fork_union_test_cpp${STD})
@@ -33,15 +44,24 @@ foreach (STD IN LISTS CXX_STANDARDS)
     # Create the executable
     add_executable(${TGT} ${TEST_SOURCES})
     set_target_properties(
-        ${target_name}
+        ${TGT}
         PROPERTIES CXX_STANDARD ${STD}
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
+                   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
     # register it as a CTest test
     add_test(NAME ${TGT} COMMAND ${TGT})
     set_target_properties_for_fork_union_script(${TGT})
+
+    # Link against `libatomic` for older GCC versions that might need it
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+        # AppleClang doesn't need `libatomic` as atomic operations are built-in
+        if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+            target_link_libraries(${TGT} PRIVATE -latomic)
+        endif ()
+    endif ()
 
 endforeach ()
 
@@ -58,9 +78,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     message(STATUS "Enabling OpenMP for fork_union_nbody on GCC")
     target_compile_options(fork_union_nbody PRIVATE -fopenmp)
     target_link_options(fork_union_nbody PRIVATE -fopenmp)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    message(STATUS "Enabling OpenMP for fork_union_nbody on Clang")
-    target_compile_options(fork_union_nbody PRIVATE -Xpreprocessor -fopenmp)
-    target_link_options(fork_union_nbody PRIVATE -lomp)
+    target_compile_options(fork_union_nbody PRIVATE -flto)
+    target_compile_options(fork_union_nbody PRIVATE -ffast-math)
 endif ()
 set_target_properties_for_fork_union_script(fork_union_nbody)
