@@ -1,3 +1,8 @@
+#if defined(_MSC_VER)
+#pragma warning(disable : 4505) // unreferenced function with internal linkage has been removed
+#pragma warning(disable : 4324) // structure was padded due to alignment specifier
+#endif
+
 /**
  *  @brief  Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   fork_union.hpp
