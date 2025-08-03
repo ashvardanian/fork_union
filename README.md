@@ -120,7 +120,7 @@ Then, include the header in your C++ code:
 namespace fu = ashvardanian::fork_union;
 
 int main() {
-    fu::basic_pool_t pool;
+    alignas(fu::default_alignment_k) fu::basic_pool_t pool;
     if (!pool.try_spawn(std::thread::hardware_concurrency())) {
         std::fprintf(stderr, "Failed to fork the threads\n");
         return EXIT_FAILURE;

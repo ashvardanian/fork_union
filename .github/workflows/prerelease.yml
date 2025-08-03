@@ -47,10 +47,9 @@ jobs:
       CXX: g++
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        # C/C++
       - name: Build C/C++
         run: |
           sudo apt update
@@ -62,7 +61,6 @@ jobs:
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -81,8 +79,8 @@ jobs:
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
         # C/C++
         # Clang 16 isn't available from default repos on Ubuntu 22.04, so we have to install it manually
@@ -97,7 +95,6 @@ jobs:
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -113,10 +110,9 @@ jobs:
     runs-on: macos-14
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        # C/C++
       - name: Build C/C++
         run: |
           brew update
@@ -128,7 +124,6 @@ jobs:
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -143,10 +138,9 @@ jobs:
     name: Windows
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        # C/C++
       - name: Build C/C++
         run: |
           choco install cmake
@@ -159,7 +153,6 @@ jobs:
           .\build_artifacts\fork_union_test_cpp17.exe
           .\build_artifacts\fork_union_test_cpp20.exe
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable

@@ -1,3 +1,8 @@
+#if defined(_MSC_VER)
+#pragma warning(disable : 4505) // unreferenced function with internal linkage has been removed
+#pragma warning(disable : 4324) // structure was padded due to alignment specifier
+#endif
+
 /**
  *  @brief  Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   fork_union.hpp
@@ -146,7 +151,7 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define FU_MAYBE_UNUSED_ __attribute__((unused))
 #elif defined(_MSC_VER)
-#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100))
+#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100 4189))
 #else
 #define FU_MAYBE_UNUSED_
 #endif
@@ -340,7 +345,8 @@ struct prong {
     constexpr prong &operator=(prong &&) noexcept = default;
     constexpr prong &operator=(prong const &) noexcept = default;
 
-    explicit prong(task_index_t task, thread_index_t thread) noexcept : task(task), thread(thread) {}
+    explicit prong(task_index_t task_index, thread_index_t thread_index) noexcept
+        : task(task_index), thread(thread_index) {}
 
     inline operator task_index_t() const noexcept { return task; }
 };
@@ -367,8 +373,9 @@ struct colocated_prong {
     constexpr colocated_prong &operator=(colocated_prong const &) noexcept = default;
     constexpr colocated_prong &operator=(colocated_prong &&) noexcept = default;
 
-    explicit colocated_prong(task_index_t task, thread_index_t thread, colocation_index_t colocation) noexcept
-        : task(task), thread(thread), colocation(colocation) {}
+    explicit colocated_prong(task_index_t task_index, thread_index_t thread_index,
+                             colocation_index_t colocation_index) noexcept
+        : task(task_index), thread(thread_index), colocation(colocation_index) {}
 
     colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
 
@@ -396,8 +403,8 @@ struct colocated_thread {
     constexpr colocated_thread &operator=(colocated_thread const &) noexcept = default;
     constexpr colocated_thread &operator=(colocated_thread &&) noexcept = default;
 
-    colocated_thread(thread_index_t thread, colocation_index_t colocation = 0) noexcept
-        : thread(thread), colocation(colocation) {}
+    colocated_thread(thread_index_t thread_index, colocation_index_t colocation_index = 0) noexcept
+        : thread(thread_index), colocation(colocation_index) {}
 
     inline operator thread_index_t() const noexcept { return thread; }
 };
@@ -419,8 +426,9 @@ struct allocation_result {
     size_type pages {0};        // ? Reports the number of memory pages allocated
 
     constexpr allocation_result() noexcept = default;
-    constexpr allocation_result(pointer_type ptr, size_type count, size_type bytes, size_type pages) noexcept
-        : ptr(ptr), count(count), bytes(bytes), pages(pages) {}
+    constexpr allocation_result(pointer_type ptr_address, size_type count_index, size_type bytes_index,
+                                size_type pages_index) noexcept
+        : ptr(ptr_address), count(count_index), bytes(bytes_index), pages(pages_index) {}
 
     explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
 
@@ -1315,7 +1323,7 @@ class basic_pool {
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
      *  @return Same value as `threads_count()`, as we only support one colocation.
      */
-    thread_index_t threads_count(index_t colocation_index) const noexcept {
+    thread_index_t threads_count(FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return threads_count();
     }
@@ -1325,7 +1333,7 @@ class basic_pool {
      *  @return Same value as `global_thread_index`, as we only support one colocation.
      */
     constexpr thread_index_t thread_local_index(thread_index_t global_thread_index,
-                                                index_t colocation_index) const noexcept {
+                                                FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return global_thread_index;
     }
@@ -1361,8 +1369,8 @@ class basic_pool {
         epoch_index_t last_epoch = 0;
         while (true) {
             // Wait for either: a new ticket or a stop flag
-            epoch_index_t new_epoch;
-            mood_t mood;
+            epoch_index_t new_epoch;       // Will definitely be initialized in the loop
+            mood_t mood = mood_t::grind_k; // May not be initialized in the loop
             micro_yield_t micro_yield;
             while ((new_epoch = epoch_.load(std::memory_order_acquire)) == last_epoch &&
                    (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
@@ -1442,10 +1450,11 @@ struct arm64_yield_t {
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
  */
-#pragma GCC push_options
-#pragma GCC target("arch=armv8-a+wfxt")
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("arch=armv8-a+wfxt")
 #endif
 
 struct arm64_wfet_t {
@@ -1473,9 +1482,10 @@ struct arm64_wfet_t {
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
 #endif // FU_DETECT_ARCH_ARM64_
@@ -1486,10 +1496,11 @@ struct x86_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#pragma GCC push_options
-#pragma GCC target("waitpkg")
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("waitpkg"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("waitpkg")
 #endif
 
 /**
@@ -1528,9 +1539,10 @@ struct x86_tpause_t {
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
 #endif // FU_DETECT_ARCH_X86_64_
@@ -1559,7 +1571,7 @@ inline capabilities_t cpu_capabilities() noexcept {
 
 #if FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
-    std::uint32_t eax, ebx, ecx, edx;
+    std::uint32_t eax, __attribute__((unused)) ebx, ecx, __attribute__((unused)) edx;
 
     // CPUID leaf 7, sub-leaf 0 for structured extended feature flags
     eax = 7, ecx = 0;
@@ -1567,6 +1579,8 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WAITPKG is bit 5 in ECX
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+    fu_unused_(ebx);
+    fu_unused_(edx);
 #endif
 
 #elif FU_DETECT_ARCH_ARM64_
@@ -1661,7 +1675,8 @@ struct ram_page_setting_t {
  *  @retval Socket ID (>= 0) if successful.
  *  @retval -1 if failed.
  */
-static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
+FU_MAYBE_UNUSED_ static inline numa_socket_id_t get_socket_id_for_core(
+    FU_MAYBE_UNUSED_ numa_core_id_t core_id) noexcept {
 
     int socket_id = -1;
 
@@ -1687,7 +1702,7 @@ static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept 
  *  @retval The size of a memory page in bytes, typically 4096 on most systems.
  *  @note On Linux, this is the system page size, which may differ from Huge Pages sizes.
  */
-static std::size_t get_ram_page_size() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
     return static_cast<std::size_t>(::numa_pagesize());
 #elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
@@ -1702,7 +1717,7 @@ static std::size_t get_ram_page_size() noexcept {
  *  @retval Total system RAM in bytes, or 0 if detection fails.
  *  @note This function provides cross-platform detection of total physical memory.
  */
-static std::size_t get_ram_total_volume() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_total_volume() noexcept {
 #if defined(__linux__)
     // On Linux, read from /proc/meminfo
     FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
@@ -2208,7 +2223,8 @@ static constexpr std::size_t page_size_1g_k = 1ull * 1024ull * 1024ull * 1024ull
  *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
  *  @retval true if binding succeeded, false otherwise.
  */
-static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline bool linux_numa_bind(void *ptr, std::size_t size_bytes,
+                                                    numa_node_id_t node_id) noexcept {
 #if FU_ENABLE_NUMA
     // Pin the memory - that may require an extra allocation for `node_mask` on some systems
     ::nodemask_t node_mask;
@@ -2240,7 +2256,8 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
  *  @retval nullptr if allocation failed or the page size is unsupported.
  *  @retval pointer to the allocated memory on success.
  */
-static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes, numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes,
+                                                         numa_node_id_t node_id) noexcept {
     assert(node_id >= 0 && "NUMA node ID must be non-negative");
     assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
 
@@ -2273,7 +2290,7 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
 #endif // FU_ENABLE_NUMA
 }
 
-static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+FU_MAYBE_UNUSED_ static inline void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
     assert(ptr != nullptr && "Pointer must not be null");
     assert(size_bytes > 0 && "Size must be greater than zero");
 #if FU_ENABLE_NUMA
@@ -2658,17 +2675,17 @@ struct linux_colocated_pool {
         // - `EPERM` if we don't have the right permissions.
         for (thread_index_t i = use_caller_thread; i < threads; ++i) {
 
-            pthread_t pthread_handle;
-            int creation_result = ::pthread_create(&pthread_handle, nullptr, &_posix_worker_loop, this);
-            pthreads_[i].handle.store(pthread_handle, std::memory_order_relaxed);
+            pthread_t new_pthread_handle;
+            int creation_result = ::pthread_create(&new_pthread_handle, nullptr, &_posix_worker_loop, this);
+            pthreads_[i].handle.store(new_pthread_handle, std::memory_order_relaxed);
             pthreads_[i].id.store(-1, std::memory_order_relaxed);
             pthreads_[i].core_id = -1; // ? Not pinned yet
 
             if (creation_result != 0) {
                 mood_.store(mood_t::die_k, std::memory_order_release);
                 for (thread_index_t j = use_caller_thread; j < i; ++j) {
-                    pthread_t pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
-                    int cancel_result = ::pthread_cancel(pthread_handle);
+                    pthread_t cancel_pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
+                    FU_MAYBE_UNUSED_ int cancel_result = ::pthread_cancel(cancel_pthread_handle);
                     assert(cancel_result == 0 && "Failed to cancel a thread");
                 }
                 reset_on_failure();
@@ -2684,8 +2701,8 @@ struct linux_colocated_pool {
                 name, name_,                                     //
                 static_cast<std::size_t>(node.first_core_id[i]), //
                 static_cast<std::size_t>(max_possible_cores));
-            pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int naming_result = ::pthread_setname_np(pthread_handle, name);
+            pthread_t naming_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            FU_MAYBE_UNUSED_ int naming_result = ::pthread_setname_np(naming_pthread_handle, name);
             assert(naming_result == 0 && "Failed to name a thread");
         }
 
@@ -2701,8 +2718,9 @@ struct linux_colocated_pool {
                 CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
 
                 // Assign the mask to the thread
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
                 pthreads_[i].core_id = cpu;
             }
@@ -2720,8 +2738,9 @@ struct linux_colocated_pool {
 
             // Assign the same mask to all threads
             for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
             }
         }
@@ -2833,8 +2852,8 @@ struct linux_colocated_pool {
         thread_index_t const threads = pthreads_.size();
         for (thread_index_t i = use_caller_thread; i != threads; ++i) {
             void *returned_value = nullptr;
-            pthread_t const pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int const join_result = ::pthread_join(pthread_handle, &returned_value);
+            pthread_t const join_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            FU_MAYBE_UNUSED_ int const join_result = ::pthread_join(join_pthread_handle, &returned_value);
             assert(join_result == 0 && "Thread join failed");
         }
 
@@ -2984,10 +3003,10 @@ struct linux_colocated_pool {
         std::size_t const cpu_set_size = CPU_ALLOC_SIZE(static_cast<unsigned long>(max_possible_cores));
         CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
         for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
-        int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
+        FU_MAYBE_UNUSED_ int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
         assert(pin_result == 0 && "Failed to reset the caller thread's affinity");
         CPU_FREE(cpu_set_ptr);
-        int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
+        FU_MAYBE_UNUSED_ int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
         assert(spread_result == 0 && "Failed to reset the caller thread's NUMA node affinity");
     }
 
@@ -3406,8 +3425,8 @@ struct linux_distributed_pool {
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
             numa_node_t const &node = new_topology.node(colocation_index);
             numa_node_id_t const node_id = node.node_id;
-            linux_numa_allocator_t allocator {node_id};
-            unique_colocation_buffer_t colocation_padded_buffer(allocator);
+            linux_numa_allocator_t node_allocator {node_id};
+            unique_colocation_buffer_t colocation_padded_buffer(node_allocator);
             colocation_padded_buffer.try_resize(1);
             colocations[colocation_index] = std::move(colocation_padded_buffer);
         }
@@ -3667,10 +3686,15 @@ struct logging_colors_t {
 #if defined(__unix__) || defined(__APPLE__)
         if (!::isatty(STDOUT_FILENO)) return;
 #endif
+#if defined(_WIN32)
+        // On Windows, assume color support is available
+        use_colors_ = true;
+#else
         char const *term = std::getenv("TERM");
         if (!term) return;
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
+#endif
     }
 
     /* ANSI style codes */

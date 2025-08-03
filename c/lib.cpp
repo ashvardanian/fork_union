@@ -150,7 +150,7 @@ size_t fu_count_quality_levels(void) {
 
 size_t fu_volume_any_pages(void) { return fu::get_ram_total_volume(); }
 
-size_t fu_volume_huge_pages_in(size_t numa_node_index) {
+size_t fu_volume_huge_pages_in(FU_MAYBE_UNUSED_ size_t numa_node_index) {
 #if FU_ENABLE_NUMA
     size_t total_volume = 0;
     auto const &node = global_numa_topology.node(numa_node_index);
@@ -161,7 +161,7 @@ size_t fu_volume_huge_pages_in(size_t numa_node_index) {
 #endif
 }
 
-size_t fu_volume_any_pages_in(size_t numa_node_index) {
+size_t fu_volume_any_pages_in(FU_MAYBE_UNUSED_ size_t numa_node_index) {
 #if FU_ENABLE_NUMA
     if (!globals_initialize()) return 0;
     if (numa_node_index >= global_numa_topology.nodes_count()) return 0;
@@ -177,8 +177,8 @@ size_t fu_volume_any_pages_in(size_t numa_node_index) {
 
 #pragma region - Memory
 
-void *fu_allocate_at_least(                       //
-    size_t numa_node_index, size_t minimum_bytes, //
+void *fu_allocate_at_least(                                        //
+    FU_MAYBE_UNUSED_ size_t numa_node_index, size_t minimum_bytes, //
     size_t *allocated_bytes, size_t *bytes_per_page) {
 
 #if FU_ENABLE_NUMA
@@ -198,7 +198,7 @@ void *fu_allocate_at_least(                       //
 #endif
 }
 
-void *fu_allocate(size_t numa_node_index, size_t bytes) {
+void *fu_allocate(FU_MAYBE_UNUSED_ size_t numa_node_index, size_t bytes) {
 
 #if FU_ENABLE_NUMA
     auto const &node = global_numa_topology.node(numa_node_index);
@@ -209,7 +209,7 @@ void *fu_allocate(size_t numa_node_index, size_t bytes) {
 #endif
 }
 
-void fu_free(size_t numa_node_index, void *pointer, size_t bytes) {
+void fu_free(FU_MAYBE_UNUSED_ size_t numa_node_index, void *pointer, FU_MAYBE_UNUSED_ size_t bytes) {
 #if FU_ENABLE_NUMA
     auto const &node = global_numa_topology.node(numa_node_index);
     fu::linux_numa_allocator_t allocator(node.node_id);
@@ -223,7 +223,7 @@ void fu_free(size_t numa_node_index, void *pointer, size_t bytes) {
 
 #pragma region - Lifetime
 
-fu_pool_t *fu_pool_new(char const *name) {
+fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
     if (!globals_initialize()) return nullptr;
 
     opaque_pool_t *opaque = static_cast<opaque_pool_t *>(std::malloc(sizeof(opaque_pool_t)));
