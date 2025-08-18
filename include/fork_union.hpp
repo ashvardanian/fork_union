@@ -1809,7 +1809,7 @@ class ram_page_settings {
      *  @brief Fetches all available huge page sizes for the given NUMA node.
      *  @note Kernel support doesn't mean that pages of that size have a valid mount point.
      */
-    bool try_harvest(numa_node_id_t node_id) noexcept {
+    bool try_harvest(FU_MAYBE_UNUSED_ numa_node_id_t node_id) noexcept {
         assert(node_id >= 0 && "NUMA node ID must be non-negative");
 
 #if FU_ENABLE_NUMA // We need Linux for `opendir`
@@ -1914,6 +1914,7 @@ class ram_page_settings {
         count_sizes_ = count_sizes;
         return true;
 #else
+        fu_unused_(node_id);
         return false;
 #endif
     }
@@ -2976,14 +2977,14 @@ struct linux_colocated_pool {
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
      *  @retval Same value as `threads_count()`, as we only support one colocation.
      */
-    thread_index_t threads_count(index_t colocation_index) const noexcept { return threads_count(); }
+    thread_index_t threads_count(FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept { return threads_count(); }
 
     /**
      *  @brief Converts a @p `global_thread_index` to a local thread index within a @b colocation.
      *  @retval Same value as @p `global_thread_index`, as we only support one colocation.
      */
     constexpr thread_index_t thread_local_index(thread_index_t global_thread_index,
-                                                index_t colocation_index = 0) const noexcept {
+                                                FU_MAYBE_UNUSED_ index_t colocation_index = 0) const noexcept {
         return global_thread_index;
     }
 
