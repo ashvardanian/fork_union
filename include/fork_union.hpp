@@ -159,7 +159,7 @@
 
 #define fu_unused_(x) ((void)(x))
 
-#if FU_DETECT_CPP_20_
+#if defined(__GNUC__) || defined(__clang__)
 #define fu_unlikely_(x) __builtin_expect(!!(x), 0)
 #else
 #define fu_unlikely_(x) (x)
