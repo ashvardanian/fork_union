@@ -1706,7 +1706,7 @@ FU_MAYBE_UNUSED_ static inline std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
     return static_cast<std::size_t>(::numa_pagesize());
 #elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
-    return ::sysconf(_SC_PAGESIZE);
+    return static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
 #else
     return 4096;
 #endif
@@ -3799,8 +3799,8 @@ struct log_core_range_t {
             if (count <= 8) {
                 int written = std::snprintf(buffer, buffer_size, "%s%d%s", value_color, core_ids[0], reset_color);
                 for (std::size_t i = 1; i < count && written < static_cast<int>(buffer_size) - 1; ++i)
-                    written += std::snprintf(                               //
-                        buffer + written, buffer_size - written, ",%s%d%s", //
+                    written += std::snprintf(                                                         //
+                        buffer + written, buffer_size - static_cast<std::size_t>(written), ",%s%d%s", //
                         value_color, core_ids[i], reset_color);
             }
             else {
@@ -3902,21 +3902,22 @@ struct log_numa_topology_t {
                 if (ps.bytes_per_page <= 4096) continue; // Skip regular pages
 
                 if (first_page) {
-                    pos += std::snprintf(                                               //
+                    pos += static_cast<std::size_t>(std::snprintf(                      //
                         line_buffer + pos, sizeof(line_buffer) - pos, " • %sPages:%s ", //
-                        colors.magenta(), /* "Pages:" */ colors.reset());
+                        colors.magenta(), /* "Pages:" */ colors.reset()));
                     first_page = false;
                 }
-                else { pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, " "); }
+                else
+                    pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, " "));
 
                 char page_size_str[32], page_volume_str[32];
                 std::size_t free_bytes = ps.free_pages * ps.bytes_per_page;
                 log_memory_volume_t {}(ps.bytes_per_page, page_size_str, sizeof(page_size_str), colorless);
                 log_memory_volume_t {}(free_bytes, page_volume_str, sizeof(page_volume_str), colorless);
 
-                pos += std::snprintf(                                            //
+                pos += static_cast<std::size_t>(std::snprintf(                   //
                     line_buffer + pos, sizeof(line_buffer) - pos, "%s%s (%s)%s", //
-                    colors.bold_magenta(), page_size_str, page_volume_str, colors.reset());
+                    colors.bold_magenta(), page_size_str, page_volume_str, colors.reset()));
             }
 
             std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n");
@@ -3953,34 +3954,39 @@ struct log_capabilities_t {
 
         bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 PAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 PAUSE%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_x86_tpause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 TPAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 TPAUSE%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_arm64_yield_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 YIELD%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sARM64 YIELD%s", first_cpu ? "" : " • ",
+                                                          colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_arm64_wfet_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 WFET%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 WFET%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_risc5_pause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sRISC-V PAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sRISC-V PAUSE%s", first_cpu ? "" : " • ",
+                                                          colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
 
         if (first_cpu) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
-                                 colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%sNone detected%s", colors.dim(), colors.reset()));
         }
 
         std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n");
@@ -3992,24 +3998,27 @@ struct log_capabilities_t {
 
         bool first_mem = true;
         if (caps & capability_numa_aware_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sNUMA%s", first_mem ? "" : " • ",
-                                 colors.bold_yellow(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sNUMA%s",
+                                                       first_mem ? "" : " • ", colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
         if (caps & capability_huge_pages_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sHuge Pages%s",
-                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sHuge Pages%s",
+                                                       first_mem ? "" : " • ", colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
         if (caps & capability_huge_pages_transparent_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sTransparent Huge Pages%s",
-                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sTransparent Huge Pages%s", first_mem ? "" : " • ",
+                                                          colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
 
         if (first_mem) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
-                                 colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%sNone detected%s", colors.dim(), colors.reset()));
         }
 
         std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n\n");
