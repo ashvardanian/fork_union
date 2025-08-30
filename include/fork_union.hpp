@@ -1444,19 +1444,27 @@ struct arm64_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("yield"); }
 };
 
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("arch=armv8-a"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("arch=armv8-a")
+#endif
+
 /**
  *  @brief On AArch64 uses the `WFET` instruction to "Wait For Event (Timed)".
  *
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
+ *
+ *  @note The WFET instruction is @b manually encoded using `.inst` to avoid
+ *  compiler-specific target attributes that may not be recognized on all
+ *  ARM64 platforms - using @b `target("arch=armv8-a+wfxt")` breaks compilation
+ *  on Apple Clang. Compiler feature detection like `__ARM_FEATURE_NEON`, but
+ *  for `WFxT` is not available at the time of writing.
+ *
+ *  Runtime detection via `capability_arm64_wfet_k` ensures this is only used when `FEAT_WFxT` is actually available.
  */
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
-#elif defined(__GNUC__)
-#pragma GCC push_options
-#pragma GCC target("arch=armv8-a+wfxt")
-#endif
-
 struct arm64_wfet_t {
     inline void operator()() const noexcept {
         std::uint64_t cntfrq_el0, cntvct_el0;
