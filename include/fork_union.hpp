@@ -1,8 +1,3 @@
-#if defined(_MSC_VER)
-#pragma warning(disable : 4505) // unreferenced function with internal linkage has been removed
-#pragma warning(disable : 4324) // structure was padded due to alignment specifier
-#endif
-
 /**
  *  @brief  Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library.
  *  @file   fork_union.hpp
@@ -13,7 +8,7 @@
  *  avoiding dynamic memory allocations, exceptions, system calls, and heavy Compare-And-Swap instructions.
  *  The library leverages the "weak memory model" to allow Arm and IBM Power CPUs to aggressively optimize
  *  execution at runtime. It also aggressively tests against overflows on smaller index types, and is safe
- *  to use even with the maximal `std::size_t` values. It's compatible with C++11 and later.
+ *  to use even with the maximal `std::size_t` values.
  *
  *  @code{.cpp}
  *  #include <cstdio> // `std::printf`
@@ -57,15 +52,20 @@
  *  isn't feasible either. It's up to the user to isolate those groups into individual pools.
  *  @sa `qos_level_t`
  *
- *  On x86, Arm, and RISC-V architectures, depending on the CPU features available, the library also
- *  exposes cheaper @b "busy-waiting" mechanisms, such as `tpause`, `wfet`, & `yield` instructions.
+ *  On x86, Arm, and RISC-V (internally referred to as RISC5) architectures, depending on the CPU
+ *  features available, the library also exposes cheaper @b "busy-waiting" mechanisms, such as
+ *  `tpause`, `wfet`, & `yield` instructions.
  *  @sa `arm64_yield_t`, `arm64_wfet_t`, `x86_yield_t`, `x86_tpause_t`, `risc5_yield_t`.
  *
- *  Minimum version of C++ 14 is needed to allow an `auto` placeholder type for return values.
- *  This significantly reduces code bloat needed to infer the return type of lambdas.
- *  @see https://en.cppreference.com/w/cpp/language/auto.html
+ *  The library uses modern C++ features and requires @b C++17 or newer.
+ *  Using C++20 will enable additional compile-time checks (concepts) where available.
  */
 #pragma once
+#if defined(_MSC_VER)
+#pragma warning(disable : 4505) // unreferenced function with internal linkage has been removed
+#pragma warning(disable : 4324) // structure was padded due to alignment specifier
+#endif
+
 #include <memory>  // `std::allocator`
 #include <thread>  // `std::thread`
 #include <atomic>  // `std::atomic`
@@ -2104,7 +2104,7 @@ struct numa_topology {
         numa_mask = ::numa_allocate_cpumask();
         if (!numa_mask) goto failed_harvest; // ! Allocation failed
 
-        // First pass – measure
+        // First pass - measure
         max_numa_node_id = ::numa_max_node();
         for (numa_node_id_t node_id = 0; node_id <= max_numa_node_id; ++node_id) {
             long long dummy;
@@ -2118,7 +2118,7 @@ struct numa_topology {
         }
         if (fetched_nodes == 0) goto failed_harvest; // ! Zero nodes is not a valid state
 
-        // Second pass – allocate
+        // Second pass - allocate
         nodes_ptr = nodes_alloc.allocate(fetched_nodes);
         core_ids_ptr = cores_alloc.allocate(fetched_cores);
         if (!nodes_ptr || !core_ids_ptr) goto failed_harvest; // ! Allocation failed
@@ -2176,7 +2176,7 @@ struct numa_topology {
      *  @brief Copy-assigns the topology from @p other.
      *
      *  Instead of a copy-constructor we expose an explicit operation that can
-     *  FAIL – returning `false` if *any* intermediate allocation fails.
+     *  FAIL - returning `false` if *any* intermediate allocation fails.
      *
      *  @param other Source topology.
      *  @retval true  Success, the current instance now owns a deep copy.
@@ -3104,14 +3104,14 @@ struct linux_colocated_pool {
                            : max_possible_cores < 100   ? 2
                            : max_possible_cores < 1000  ? 3
                            : max_possible_cores < 10000 ? 4
-                                                        : 0; // fall‑through – let snprintf clip
+                                                        : 0; // fall-through - let `snprintf` clip
 
         if (digits == 0) {
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #endif
-            //  "%s:%zu" - worst‑case  (base up to 11 chars) + ":" + up‑to‑2‑digit index
+            //  "%s:%zu" - worst-case  (base up to 11 chars) + ":" + up-to-2-digit index
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%s:%zu", base_name, index + 1);
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
@@ -3120,7 +3120,7 @@ struct linux_colocated_pool {
         else {
             int const base_len = max_visible_chars - digits - 1; // -1 for ':'
             // "%.*s" - truncates base_name to base_len
-            // "%0*zu" - prints zero‑padded index using exactly 'digits' characters
+            // "%0*zu" - prints zero-padded index using exactly `digits` characters
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%.*s:%0*zu", base_len, base_name, digits, index + 1);
         }
     }
@@ -3771,7 +3771,7 @@ struct log_memory_volume_t {
 };
 
 /**
- *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0–3,5,7,8,10–12".
+ *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0-3,5,7,8,10-12".
  */
 struct log_core_range_t {
 
@@ -3799,7 +3799,7 @@ struct log_core_range_t {
 
         if (is_contiguous) {
             std::snprintf(                            //
-                buffer, buffer_size, "%s%d%s–%s%d%s", //
+                buffer, buffer_size, "%s%d%s-%s%d%s", //
                 value_color, core_ids[0], reset_color, value_color, core_ids[count - 1], reset_color);
         }
         else {
