@@ -16,35 +16,35 @@ using thread_allocator_t = std::allocator<std::thread>;
 
 using pool_variants_t = std::variant< //
 
-#if _FU_WITH_ASM_YIELDS
-#if _FU_DETECT_ARCH_X86_64
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
     fu::basic_pool<thread_allocator_t, fu::x86_pause_t>,  //
     fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>, //
 #endif
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
     fu::basic_pool<thread_allocator_t, fu::arm64_yield_t>, //
     fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t>,  //
 #endif
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
     fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>, //
 #endif
-#endif // _FU_WITH_ASM_YIELDS
+#endif // FU_WITH_ASM_YIELDS_
 
 #if FU_ENABLE_NUMA
     fu::linux_distributed_pool<fu::standard_yield_t>, //
-#if _FU_WITH_ASM_YIELDS
-#if _FU_DETECT_ARCH_X86_64
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
     fu::linux_distributed_pool<fu::x86_pause_t>,  //
     fu::linux_distributed_pool<fu::x86_tpause_t>, //
 #endif
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
     fu::linux_distributed_pool<fu::arm64_yield_t>, //
     fu::linux_distributed_pool<fu::arm64_wfet_t>,  //
 #endif
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
     fu::linux_distributed_pool<fu::risc5_pause_t>, //
 #endif
-#endif // _FU_WITH_ASM_YIELDS
+#endif // FU_WITH_ASM_YIELDS_
 #endif // FU_ENABLE_NUMA
 
     fu::basic_pool<thread_allocator_t, fu::standard_yield_t> //
@@ -237,8 +237,8 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
         return nullptr;
     }
 
-#if _FU_WITH_ASM_YIELDS
-#if _FU_DETECT_ARCH_X86_64
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
     if (global_capabilities & fu::capability_x86_tpause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::x86_tpause_t>>, name,
                                    std::move(copied_topology));
@@ -250,7 +250,7 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
     if (global_capabilities & fu::capability_arm64_wfet_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::arm64_wfet_t>>, name,
                                    std::move(copied_topology));
@@ -262,19 +262,19 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
     if (global_capabilities & fu::capability_risc5_pause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::linux_distributed_pool<fu::risc5_pause_t>>, name,
                                    std::move(copied_topology));
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#endif // _FU_WITH_ASM_YIELDS
+#endif // FU_WITH_ASM_YIELDS_
 #endif // FU_ENABLE_NUMA
 
     // Common case of using modern hardware, but not having Linux installed
-#if _FU_WITH_ASM_YIELDS
-#if _FU_DETECT_ARCH_X86_64
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
     if (global_capabilities & fu::capability_x86_tpause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>>);
         return reinterpret_cast<fu_pool_t *>(opaque);
@@ -284,7 +284,7 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
     if (global_capabilities & fu::capability_arm64_wfet_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t>>);
         return reinterpret_cast<fu_pool_t *>(opaque);
@@ -294,13 +294,13 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
     if (global_capabilities & fu::capability_risc5_pause_k) {
         new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>>);
         return reinterpret_cast<fu_pool_t *>(opaque);
     }
 #endif
-#endif // _FU_WITH_ASM_YIELDS
+#endif // FU_WITH_ASM_YIELDS_
 
     // Worst case, use the standard yield pool
     new (opaque) opaque_pool_t(std::in_place_type<fu::basic_pool<thread_allocator_t, fu::standard_yield_t>>);
