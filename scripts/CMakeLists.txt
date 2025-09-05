@@ -1,17 +1,17 @@
 # Shared logic for setting target properties for tests and examples
 function (set_target_properties_for_fork_union_script target_name)
-    target_link_libraries(${TGT} PRIVATE fork_union)
+    target_link_libraries(${target_name} PRIVATE fork_union)
 
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         # This warning annoys us by reminding, that before GCC 4.6 the ABI for passing objects aligned to ≥32-bytes was
         # different... but that GCC version was released in 2014, over a decade ago.
-        target_compile_options(${TGT} PRIVATE -Wno-psabi)
+        target_compile_options(${target_name} PRIVATE -Wno-psabi)
     endif ()
 
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
-        message(STATUS "Enabling optimizations for ${TGT}")
-        target_compile_options(${TGT} PRIVATE -O3)
+        message(STATUS "Enabling optimizations for ${target_name}")
+        target_compile_options(${target_name} PRIVATE -O3)
     endif ()
 
     # if we're not in Release mode
@@ -23,13 +23,13 @@ function (set_target_properties_for_fork_union_script target_name)
         )
             # Using thread sanitizers caused all kinds of stalls on NUMA systems
             # ~~~
-            # message(STATUS "Enabling ThreadSanitizer for ${TGT}")
-            # target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread)
-            # target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # message(STATUS "Enabling ThreadSanitizer for ${target_name}")
+            # target_compile_options(${target_name} PRIVATE -fsanitize=undefined,thread)
+            # target_link_options(${target_name} PRIVATE -fsanitize=undefined,thread)
             # ~~~
-            target_compile_options(${TGT} PRIVATE -g -O0)
-            target_compile_options(${TGT} PRIVATE -fno-omit-frame-pointer)
-            target_link_options(${TGT} PRIVATE)
+            target_compile_options(${target_name} PRIVATE -g -O0)
+            target_compile_options(${target_name} PRIVATE -fno-omit-frame-pointer)
+            target_link_options(${target_name} PRIVATE)
         endif ()
     endif ()
 endfunction ()
