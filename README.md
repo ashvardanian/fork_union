@@ -43,6 +43,21 @@ Most interestingly, for Big Data applications, a higher-level `distributed_pool`
 
 ### Intro in Rust
 
+To integrate into your Rust project, add the following lines to Cargo.toml:
+
+```toml
+[dependencies]
+fork_union = "2.2.5"                                    # default
+fork_union = { version = "2.2.5", features = ["numa"] } # with NUMA support on Linux
+```
+
+Or for the preview development version:
+
+```toml
+[dependencies]
+fork_union = { git = "https://github.com/ashvardanian/fork_union.git", branch = "main-dev" }
+```
+
 A minimal example may look like this:
 
 ```rs
