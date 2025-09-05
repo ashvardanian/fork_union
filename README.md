@@ -12,7 +12,7 @@ OpenMP, however, is not ideal for fine-grained parallelism and is less portable 
 
 This is where __`fork_union`__ comes in.
 It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
-It supports pinning nodes to specific NUMA nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
+It supports pinning threads to specific NUMA nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
 
 ## Basic Usage
 
@@ -42,6 +42,21 @@ Those are out-of-the-box compatible with the higher-level APIs.
 Most interestingly, for Big Data applications, a higher-level `distributed_pool` class will address and balance the work across all NUMA nodes.
 
 ### Intro in Rust
+
+To integrate into your Rust project, add the following lines to Cargo.toml:
+
+```toml
+[dependencies]
+fork_union = "2.2.5"                                    # default
+fork_union = { version = "2.2.5", features = ["numa"] } # with NUMA support on Linux
+```
+
+Or for the preview development version:
+
+```toml
+[dependencies]
+fork_union = { git = "https://github.com/ashvardanian/fork_union.git", branch = "main-dev" }
+```
 
 A minimal example may look like this:
 
@@ -89,6 +104,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
+For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
+
 ### Intro in C++
 
 To integrate into your C++ project, either just copy the `include/fork_union.hpp` file into your project, add a Git submodule, or CMake.
@@ -103,8 +120,8 @@ Alternatively, using CMake:
 ```cmake
 FetchContent_Declare(
     fork_union
-    GIT_REPOSITORY
-    https://github.com/ashvardanian/fork_union
+    GIT_REPOSITORY https://github.com/ashvardanian/fork_union
+    GIT_TAG v2.2.5
 )
 FetchContent_MakeAvailable(fork_union)
 target_link_libraries(your_target PRIVATE fork_union::fork_union)
@@ -120,7 +137,7 @@ Then, include the header in your C++ code:
 namespace fu = ashvardanian::fork_union;
 
 int main() {
-    fu::basic_pool_t pool;
+    alignas(fu::default_alignment_k) fu::basic_pool_t pool;
     if (!pool.try_spawn(std::thread::hardware_concurrency())) {
         std::fprintf(stderr, "Failed to fork the threads\n");
         return EXIT_FAILURE;
@@ -157,8 +174,8 @@ int main() {
 }
 ```
 
-That's it.
 For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
+NUMA detection on Linux defaults to AUTO. Override with `-D FORK_UNION_ENABLE_NUMA=ON` or `OFF`.
 
 ## Alternatives & Differences
 
@@ -183,8 +200,8 @@ On Linux, the latter translates to ["futex"](https://en.wikipedia.org/wiki/Futex
 
 ### Memory Allocations
 
-C++ has rich functionality for concurrent applications, like `std::future`, `std::packaged_task`, `std::function`, `std::queue`, `std::conditional_variable`, and so on.
-Most of those, I believe, aren't unusable in Big-Data applications, where you always operate in memory-constrained environments:
+C++ has rich functionality for concurrent applications, like `std::future`, `std::packaged_task`, `std::function`, `std::queue`, `std::condition_variable`, and so on.
+Most of those, I believe, are unusable in Big-Data applications, where you always operate in memory-constrained environments:
 
 - The idea of raising a `std::bad_alloc` exception when there is no memory left and just hoping that someone up the call stack will catch it is not a great design idea for any Systems Engineering.
 - The threat of having to synchronize ~200 physical CPU cores across 2-8 sockets and potentially dozens of [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access) nodes around a shared global memory allocator practically means you can't have predictable performance.
@@ -214,7 +231,7 @@ That's why, for the "dynamic" mode, we resort to using an additional atomic vari
 ### Alignment & False Sharing
 
 The thread-pool needs several atomic variables to synchronize the state.
-It those variables are located on the same cache line, they will be "falsely shared" between threads.
+If those variables are located on the same cache line, they will be "falsely shared" between threads.
 This means that when one thread updates one of the variables, it will invalidate the cache line in all other threads, causing them to reload it from memory.
 This is a common problem, and the C++ standard recommends addressing it with `alignas(std::hardware_destructive_interference_size)` for your hot variables.
 
@@ -383,8 +400,8 @@ You can rerun those benchmarks with the following commands:
 ```bash
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
 cmake --build build_release --config Release
-time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_static build_release/scripts/fork_union_nbody
-time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_dynamic build_release/scripts/fork_union_nbody
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_static build_release/fork_union_nbody
+time NBODY_COUNT=128 NBODY_ITERATIONS=1000000 NBODY_BACKEND=fork_union_dynamic build_release/fork_union_nbody
 ```
 
 ## Safety & Logic
@@ -425,16 +442,25 @@ To run the C++ tests, use CMake:
 
 ```bash
 cmake -B build_release -D CMAKE_BUILD_TYPE=Release
-cmake --build build_release --config Release
-ctest -C build_release                          # run all tests
-build_release/scripts/fork_union_nbody          # run the benchmarks
+cmake --build build_release --config Release -j
+ctest --test-dir build_release                  # run all tests
+build_release/fork_union_nbody                  # run the benchmarks
 ```
 
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:
 
 ```bash
-cmake --build build_debug --config Debug  # build with Debug symbols
-build_debug/scripts/fork_union_test_cpp20 # run a single test executable
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug
+cmake --build build_debug --config Debug        # build with Debug symbols
+build_debug/fork_union_test_cpp20               # run a single test executable
+```
+
+To run static analysis:
+
+```bash
+sudo apt install cppcheck clang-tidy
+cmake --build build_debug --target cppcheck     # detects bugs & undefined behavior
+cmake --build build_debug --target clang-tidy   # suggest code improvements
 ```
 
 To include NUMA, Huge Pages, and other optimizations on Linux, make sure to install dependencies:
@@ -451,13 +477,15 @@ To build with an alternative compiler, like LLVM Clang, use the following comman
 sudo apt-get install libomp-15-dev clang++-15 # OpenMP version must match Clang
 cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=clang++-15
 cmake --build build_debug --config Debug
-build_debug/scripts/fork_union_test_cpp20
+build_debug/fork_union_test_cpp20
 ```
 
 For Rust, use the following command:
 
 ```bash
-rustup toolchain install # for Alloc API
-cargo miri test          # to catch UBs
-cargo test --release     # to run the tests fast
+rustup toolchain install    # for Alloc API
+cargo miri test             # to catch UBs
+cargo build --features numa # for NUMA support on Linux
+cargo test --features numa --release        # to run the tests fast
+cargo test --release        # to run the tests fast
 ```

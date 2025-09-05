@@ -8,7 +8,7 @@
  *  avoiding dynamic memory allocations, exceptions, system calls, and heavy Compare-And-Swap instructions.
  *  The library leverages the "weak memory model" to allow Arm and IBM Power CPUs to aggressively optimize
  *  execution at runtime. It also aggressively tests against overflows on smaller index types, and is safe
- *  to use even with the maximal `std::size_t` values. It's compatible with C++11 and later.
+ *  to use even with the maximal `std::size_t` values.
  *
  *  @code{.cpp}
  *  #include <cstdio> // `std::printf`
@@ -52,15 +52,20 @@
  *  isn't feasible either. It's up to the user to isolate those groups into individual pools.
  *  @sa `qos_level_t`
  *
- *  On x86, Arm, and RISC-V architectures, depending on the CPU features available, the library also
- *  exposes cheaper @b "busy-waiting" mechanisms, such as `tpause`, `wfet`, & `yield` instructions.
+ *  On x86, Arm, and RISC-V (internally referred to as RISC5) architectures, depending on the CPU
+ *  features available, the library also exposes cheaper @b "busy-waiting" mechanisms, such as
+ *  `tpause`, `wfet`, & `yield` instructions.
  *  @sa `arm64_yield_t`, `arm64_wfet_t`, `x86_yield_t`, `x86_tpause_t`, `risc5_yield_t`.
  *
- *  Minimum version of C++ 14 is needed to allow an `auto` placeholder type for return values.
- *  This significantly reduces code bloat needed to infer the return type of lambdas.
- *  @see https://en.cppreference.com/w/cpp/language/auto.html
+ *  The library uses modern C++ features and requires @b C++17 or newer.
+ *  Using C++20 will enable additional compile-time checks (concepts) where available.
  */
 #pragma once
+#if defined(_MSC_VER)
+#pragma warning(disable : 4505) // unreferenced function with internal linkage has been removed
+#pragma warning(disable : 4324) // structure was padded due to alignment specifier
+#endif
+
 #include <memory>  // `std::allocator`
 #include <thread>  // `std::thread`
 #include <atomic>  // `std::atomic`
@@ -74,8 +79,8 @@
 #include <array>   // `std::array`
 
 #define FORK_UNION_VERSION_MAJOR 2
-#define FORK_UNION_VERSION_MINOR 1
-#define FORK_UNION_VERSION_PATCH 1
+#define FORK_UNION_VERSION_MINOR 2
+#define FORK_UNION_VERSION_PATCH 5
 
 #if !defined(FU_ALLOW_UNSAFE)
 #define FU_ALLOW_UNSAFE 0
@@ -122,65 +127,67 @@
  *  On C++20 and later we can use concepts for cleaner compile-time checks.
  */
 #if __cplusplus >= 202002L
-#define _FU_DETECT_CPP_20 1
+#define FU_DETECT_CPP_20_ 1
 #else
-#define _FU_DETECT_CPP_20 0
+#define FU_DETECT_CPP_20_ 0
 #endif
 #if __cplusplus >= 201703L
-#define _FU_DETECT_CPP_17 1
+#define FU_DETECT_CPP_17_ 1
 #else
-#define _FU_DETECT_CPP_17 0
+#define FU_DETECT_CPP_17_ 0
 #endif
 
-#if _FU_DETECT_CPP_17
+#if FU_DETECT_CPP_17_
 #include <type_traits> // `std::is_nothrow_invocable_r`
 #endif
 
-#if _FU_DETECT_CPP_20
+#if FU_DETECT_CPP_20_
 #include <concepts> // `std::same_as`, `std::invocable`
 #endif
 
-#if _FU_DETECT_CPP_17
-#define _FU_MAYBE_UNUSED [[maybe_unused]]
+#if FU_DETECT_CPP_17_
+#define FU_MAYBE_UNUSED_ [[maybe_unused]]
 #else
 #if defined(__GNUC__) || defined(__clang__)
-#define _FU_MAYBE_UNUSED __attribute__((unused))
+#define FU_MAYBE_UNUSED_ __attribute__((unused))
 #elif defined(_MSC_VER)
-#define _FU_MAYBE_UNUSED __pragma(warning(suppress : 4100))
+#define FU_MAYBE_UNUSED_ __pragma(warning(suppress : 4100 4189))
 #else
-#define _FU_MAYBE_UNUSED
+#define FU_MAYBE_UNUSED_
 #endif
 #endif
 
-#if _FU_DETECT_CPP_20
-#define _FU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define fu_unused_(x) ((void)(x))
+
+#if defined(__GNUC__) || defined(__clang__)
+#define fu_unlikely_(x) __builtin_expect(!!(x), 0)
 #else
-#define _FU_UNLIKELY(x) (x)
+#define fu_unlikely_(x) (x)
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
-#define _FU_WITH_ASM_YIELDS 1
+#define FU_WITH_ASM_YIELDS_ 1
 #else
-#define _FU_WITH_ASM_YIELDS 0
+#define FU_WITH_ASM_YIELDS_ 0
 #endif
 
 /*  Detect target CPU architecture.
  *  We'll only use it when compiling Inline Assembly code on GCC or Clang.
  */
 #if defined(__arm64__) || defined(__arm64__) || defined(_M_ARM64)
-#define _FU_DETECT_ARCH_ARM64 1
+#define FU_DETECT_ARCH_ARM64_ 1
 #else
-#define _FU_DETECT_ARCH_ARM64 0
+#define FU_DETECT_ARCH_ARM64_ 0
 #endif
 #if defined(__x86_64__) || defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
-#define _FU_DETECT_ARCH_X86_64 1
+#define FU_DETECT_ARCH_X86_64_ 1
 #else
-#define _FU_DETECT_ARCH_X86_64 0
+#define FU_DETECT_ARCH_X86_64_ 0
 #endif
 #if defined(__riscv)
-#define _FU_DETECT_ARCH_RISC5 1
+#define FU_DETECT_ARCH_RISC5_ 1
 #else
-#define _FU_DETECT_ARCH_RISC5 0
+#define FU_DETECT_ARCH_RISC5_ 0
 #endif
 
 namespace ashvardanian {
@@ -285,19 +292,19 @@ struct standard_yield_t {
  *  According to the  C++ standard, the destructor of the `broadcast_join_t` will
  *  be called in the end of the `for_threads`-calling expression.
  */
-template <typename basic_pool_type_, typename fork_type_>
+template <typename pool_type_, typename fork_type_>
 struct broadcast_join {
 
-    using basic_pool_t = basic_pool_type_;
+    using pool_t = pool_type_;
     using fork_t = fork_type_;
 
   private:
-    basic_pool_t &pool_ref_;
+    pool_t &pool_ref_;
     fork_t fork_;                // ? We need this to extend the lifetime of the lambda object
     bool did_broadcast_ {false}; // ? Both
 
   public:
-    broadcast_join(basic_pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::forward<fork_t>(f)) {}
+    broadcast_join(pool_t &pool_ref, fork_t &&f) noexcept : pool_ref_(pool_ref), fork_(std::forward<fork_t>(f)) {}
     fork_t &fork_ref() noexcept { return fork_; }
 
     void broadcast() noexcept {
@@ -314,9 +321,9 @@ struct broadcast_join {
     }
 
     ~broadcast_join() noexcept { join(); }
-    broadcast_join(broadcast_join &&) = default;
+    broadcast_join(broadcast_join &&) noexcept = default;
     broadcast_join(broadcast_join const &) = delete;
-    broadcast_join &operator=(broadcast_join &&) = default;
+    broadcast_join &operator=(broadcast_join &&) noexcept = default;
     broadcast_join &operator=(broadcast_join const &) = delete;
 };
 
@@ -332,13 +339,14 @@ struct prong {
     task_index_t task {0};
     thread_index_t thread {0};
 
-    constexpr prong() = default;
-    constexpr prong(prong &&) = default;
-    constexpr prong(prong const &) = default;
-    constexpr prong &operator=(prong &&) = default;
-    constexpr prong &operator=(prong const &) = default;
+    constexpr prong() noexcept = default;
+    constexpr prong(prong &&) noexcept = default;
+    constexpr prong(prong const &) noexcept = default;
+    constexpr prong &operator=(prong &&) noexcept = default;
+    constexpr prong &operator=(prong const &) noexcept = default;
 
-    explicit prong(task_index_t task, thread_index_t thread = 0) noexcept : task(task), thread(thread) {}
+    explicit prong(task_index_t task_index, thread_index_t thread_index) noexcept
+        : task(task_index), thread(thread_index) {}
 
     inline operator task_index_t() const noexcept { return task; }
 };
@@ -359,14 +367,15 @@ struct colocated_prong {
     thread_index_t thread {0};
     colocation_index_t colocation {0};
 
-    constexpr colocated_prong() = default;
-    constexpr colocated_prong(colocated_prong &&) = default;
-    constexpr colocated_prong(colocated_prong const &) = default;
-    constexpr colocated_prong &operator=(colocated_prong const &) = default;
-    constexpr colocated_prong &operator=(colocated_prong &&) = default;
+    constexpr colocated_prong() noexcept = default;
+    constexpr colocated_prong(colocated_prong &&) noexcept = default;
+    constexpr colocated_prong(colocated_prong const &) noexcept = default;
+    constexpr colocated_prong &operator=(colocated_prong const &) noexcept = default;
+    constexpr colocated_prong &operator=(colocated_prong &&) noexcept = default;
 
-    explicit colocated_prong(task_index_t task, thread_index_t thread = 0, colocation_index_t colocation = 0) noexcept
-        : task(task), thread(thread), colocation(colocation) {}
+    explicit colocated_prong(task_index_t task_index, thread_index_t thread_index,
+                             colocation_index_t colocation_index) noexcept
+        : task(task_index), thread(thread_index), colocation(colocation_index) {}
 
     colocated_prong(prong<index_t> const &prong) noexcept : task(prong.task), thread(prong.thread), colocation(0) {}
 
@@ -388,14 +397,14 @@ struct colocated_thread {
     thread_index_t thread {0};
     colocation_index_t colocation {0};
 
-    constexpr colocated_thread() = default;
-    constexpr colocated_thread(colocated_thread &&) = default;
-    constexpr colocated_thread(colocated_thread const &) = default;
-    constexpr colocated_thread &operator=(colocated_thread const &) = default;
-    constexpr colocated_thread &operator=(colocated_thread &&) = default;
+    constexpr colocated_thread() noexcept = default;
+    constexpr colocated_thread(colocated_thread &&) noexcept = default;
+    constexpr colocated_thread(colocated_thread const &) noexcept = default;
+    constexpr colocated_thread &operator=(colocated_thread const &) noexcept = default;
+    constexpr colocated_thread &operator=(colocated_thread &&) noexcept = default;
 
-    explicit colocated_thread(thread_index_t thread, colocation_index_t colocation = 0) noexcept
-        : thread(thread), colocation(colocation) {}
+    colocated_thread(thread_index_t thread_index, colocation_index_t colocation_index = 0) noexcept
+        : thread(thread_index), colocation(colocation_index) {}
 
     inline operator thread_index_t() const noexcept { return thread; }
 };
@@ -417,8 +426,9 @@ struct allocation_result {
     size_type pages {0};        // ? Reports the number of memory pages allocated
 
     constexpr allocation_result() noexcept = default;
-    constexpr allocation_result(pointer_type ptr, size_type count, size_type bytes, size_type pages) noexcept
-        : ptr(ptr), count(count), bytes(bytes), pages(pages) {}
+    constexpr allocation_result(pointer_type ptr_address, size_type count_index, size_type bytes_index,
+                                size_type pages_index) noexcept
+        : ptr(ptr_address), count(count_index), bytes(bytes_index), pages(pages_index) {}
 
     explicit constexpr operator bool() const noexcept { return ptr != nullptr && count > 0; }
 
@@ -471,7 +481,7 @@ class unique_padded_buffer {
     }
 
   public:
-    unique_padded_buffer() = default;
+    unique_padded_buffer() noexcept = default;
 
     explicit unique_padded_buffer(allocator_t const &alloc, std::size_t bytes_per_object = sizeof(object_t)) noexcept
         : bytes_per_object_(bytes_per_object), allocator_(alloc) {}
@@ -556,7 +566,7 @@ struct dummy_lambda_t {};
  *
  *  @see Compatible with STL unique locks: https://en.cppreference.com/w/cpp/thread/unique_lock.html
  */
-#if _FU_DETECT_CPP_20
+#if FU_DETECT_CPP_20_
 
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
 class spin_mutex {
@@ -573,7 +583,7 @@ class spin_mutex {
     void unlock() noexcept { flag_.clear(std::memory_order_release); }
 };
 
-#else // _FU_DETECT_CPP_20
+#else // FU_DETECT_CPP_20_
 
 template <typename micro_yield_type_ = standard_yield_t, std::size_t alignment_ = default_alignment_k>
 class spin_mutex {
@@ -597,7 +607,7 @@ class spin_mutex {
     void unlock() noexcept { flag_.store(false, std::memory_order_release); }
 };
 
-#endif // _FU_DETECT_CPP_20
+#endif // FU_DETECT_CPP_20_
 
 using spin_mutex_t = spin_mutex<>;
 
@@ -617,13 +627,15 @@ using indexed_range_t = indexed_range<>;
  *
  *  The first `(tasks % threads)` chunks have size `ceil(tasks / threads)`.
  *  The remaining `tasks - (tasks % threads)` chunks have size `floor(tasks / threads)`
+ *  Has the convenient added property that the difference between the largest and smallest
+ *  chunk size is at most 1, which can be used in some ordering algorithms.
  */
 template <typename index_type_ = std::size_t>
 struct indexed_split {
     using index_t = index_type_;
     using indexed_range_t = indexed_range<index_t>;
 
-    inline indexed_split() = default;
+    inline indexed_split() noexcept = default;
 
     /**
      *  @brief Constructs an indexed split for a given number of tasks and threads.
@@ -636,10 +648,13 @@ struct indexed_split {
     }
 
     inline indexed_range_t operator[](index_t const i) const noexcept {
-        index_t const begin = quotient_ * i + (i < remainder_ ? i : remainder_);
-        index_t const count = quotient_ + (i < remainder_ ? 1 : 0);
+        index_t const begin = static_cast<index_t>(quotient_ * i + (i < remainder_ ? i : remainder_));
+        index_t const count = static_cast<index_t>(quotient_ + (i < remainder_ ? 1 : 0));
         return {begin, count};
     }
+
+    inline index_t smallest_size() const noexcept { return quotient_; }
+    inline index_t largest_size() const noexcept { return quotient_ + (remainder_ > 0); }
 
   private:
     index_t quotient_ {0};
@@ -710,7 +725,7 @@ struct coprime_permutation_range {
         index_t elements_left_ {0}; // countdown until `end()`
     };
 
-    coprime_permutation_range() = default;
+    coprime_permutation_range() noexcept = default;
 
     /**
      *  @param[in] start First element of the permutation.
@@ -849,7 +864,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_thread_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_thread<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
 #else
@@ -861,7 +876,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_task_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t>;
@@ -874,7 +889,7 @@ template <typename fork_type_, typename index_type_ = std::size_t>
 constexpr bool can_be_for_slice_callback() noexcept {
     using fork_t = fork_type_;
     using index_t = index_type_;
-#if _FU_DETECT_CPP_17 && defined(__cpp_lib_is_invocable)
+#if FU_DETECT_CPP_17_ && defined(__cpp_lib_is_invocable)
     return std::is_nothrow_invocable_r_v<void, fork_t, colocated_prong<index_t>, index_t> ||
            std::is_nothrow_invocable_r_v<void, fork_t, prong<index_t>, index_t> ||
            std::is_nothrow_invocable_r_v<void, fork_t, index_t, index_t>;
@@ -883,13 +898,13 @@ constexpr bool can_be_for_slice_callback() noexcept {
 #endif
 }
 
-#if _FU_DETECT_CPP_20 && defined(__cpp_concepts)
-#define _FU_DETECT_CONCEPTS 1
-#define _FU_REQUIRES(condition) requires(condition)
+#if FU_DETECT_CPP_20_ && defined(__cpp_concepts)
+#define FU_DETECT_CONCEPTS_ 1
+#define FU_REQUIRES_(condition) requires(condition)
 #else
-#define _FU_DETECT_CONCEPTS 0
-#define _FU_REQUIRES(condition)
-#endif // _FU_DETECT_CPP_20
+#define FU_DETECT_CONCEPTS_ 0
+#define FU_REQUIRES_(condition)
+#endif // FU_DETECT_CPP_20_
 
 #pragma endregion - Helpers and Constants
 
@@ -1124,7 +1139,7 @@ class basic_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -1135,7 +1150,7 @@ class basic_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();
@@ -1242,6 +1257,9 @@ class basic_pool {
         mood_.store(mood_t::chill_k, std::memory_order_release);
     }
 
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
+
 #pragma endregion Control Flow
 
 #pragma region Indexed Task Scheduling
@@ -1252,7 +1270,7 @@ class basic_pool {
      *  @param[in] fork The callback object, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_slices<fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1270,7 +1288,7 @@ class basic_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_n<fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1284,7 +1302,7 @@ class basic_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<basic_pool, invoke_for_n_dynamic<fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -1305,7 +1323,7 @@ class basic_pool {
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
      *  @return Same value as `threads_count()`, as we only support one colocation.
      */
-    thread_index_t threads_count(index_t colocation_index) const noexcept {
+    thread_index_t threads_count(FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return threads_count();
     }
@@ -1315,7 +1333,7 @@ class basic_pool {
      *  @return Same value as `global_thread_index`, as we only support one colocation.
      */
     constexpr thread_index_t thread_local_index(thread_index_t global_thread_index,
-                                                index_t colocation_index) const noexcept {
+                                                FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept {
         assert(colocation_index == 0 && "Only one colocation is supported");
         return global_thread_index;
     }
@@ -1336,7 +1354,7 @@ class basic_pool {
     template <typename fork_type_>
     static void _call_as_lambda(punned_fork_context_t punned_lambda_pointer, thread_index_t thread_index) noexcept {
         fork_type_ &lambda_object = *static_cast<fork_type_ *>(punned_lambda_pointer);
-        lambda_object(colocated_thread_t {thread_index});
+        lambda_object(colocated_thread_t {thread_index, 0});
     }
 
     /**
@@ -1351,15 +1369,15 @@ class basic_pool {
         epoch_index_t last_epoch = 0;
         while (true) {
             // Wait for either: a new ticket or a stop flag
-            epoch_index_t new_epoch;
-            mood_t mood;
+            epoch_index_t new_epoch;       // Will definitely be initialized in the loop
+            mood_t mood = mood_t::grind_k; // May not be initialized in the loop
             micro_yield_t micro_yield;
             while ((new_epoch = epoch_.load(std::memory_order_acquire)) == last_epoch &&
                    (mood = mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (_FU_UNLIKELY(mood == mood_t::die_k)) break;
-            if (_FU_UNLIKELY(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (fu_unlikely_(mood == mood_t::die_k)) break;
+            if (fu_unlikely_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_length_micros_));
                 continue;
             }
@@ -1368,7 +1386,7 @@ class basic_pool {
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
-            _FU_MAYBE_UNUSED thread_index_t const before_decrement =
+            FU_MAYBE_UNUSED_ thread_index_t const before_decrement =
                 threads_to_sync_.fetch_sub(1, std::memory_order_release);
             assert(before_decrement > 0 && "We can't be here if there are no worker threads");
         }
@@ -1378,7 +1396,7 @@ class basic_pool {
 using basic_pool_t = basic_pool<>;
 
 #pragma region Concepts
-#if _FU_DETECT_CONCEPTS
+#if FU_DETECT_CONCEPTS_
 
 struct broadcasted_noop_t {
     template <typename index_type_>
@@ -1411,33 +1429,42 @@ concept is_unsafe_pool =   //
         { p.unsafe_join() } -> std::same_as<void>;
     };
 
-#endif // _FU_DETECT_CONCEPTS
+#endif // FU_DETECT_CONCEPTS_
 #pragma endregion Concepts
 
 #pragma endregion - Basic Pool
 
 #pragma region - Hardware Friendly Yield
 
-#if _FU_WITH_ASM_YIELDS // We need inline assembly support
+#if FU_WITH_ASM_YIELDS_ // We need inline assembly support
 
-#if _FU_DETECT_ARCH_ARM64
+#if FU_DETECT_ARCH_ARM64_
 
 struct arm64_yield_t {
     inline void operator()() const noexcept { __asm__ __volatile__("yield"); }
 };
+
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("arch=armv8-a"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("arch=armv8-a")
+#endif
 
 /**
  *  @brief On AArch64 uses the `WFET` instruction to "Wait For Event (Timed)".
  *
  *  Places the core into light sleep mode, waiting for an event to wake it up,
  *  or the timeout to expire.
+ *
+ *  @note The WFET instruction is @b manually encoded using `.inst` to avoid
+ *  compiler-specific target attributes that may not be recognized on all
+ *  ARM64 platforms - using @b `target("arch=armv8-a+wfxt")` breaks compilation
+ *  on Apple Clang. Compiler feature detection like `__ARM_FEATURE_NEON`, but
+ *  for `WFxT` is not available at the time of writing.
+ *
+ *  Runtime detection via `capability_arm64_wfet_k` ensures this is only used when `FEAT_WFxT` is actually available.
  */
-#pragma GCC push_options
-#pragma GCC target("arch=armv8-a+wfxt")
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("arch=armv8-a+wfxt"))), apply_to = function)
-#endif
-
 struct arm64_wfet_t {
     inline void operator()() const noexcept {
         std::uint64_t cntfrq_el0, cntvct_el0;
@@ -1463,23 +1490,25 @@ struct arm64_wfet_t {
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
-#endif // _FU_DETECT_ARCH_ARM64
+#endif // FU_DETECT_ARCH_ARM64_
 
-#if _FU_DETECT_ARCH_X86_64
+#if FU_DETECT_ARCH_X86_64_
 
 struct x86_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#pragma GCC push_options
-#pragma GCC target("waitpkg")
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("waitpkg"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("waitpkg")
 #endif
 
 /**
@@ -1493,8 +1522,8 @@ struct x86_pause_t {
  */
 struct x86_tpause_t {
     inline void operator()() const noexcept {
-        constexpr std::uint64_t cycles_per_us = 3 * 1000; // ? Around 3K cycles per microsecond
-        constexpr std::uint32_t sleep_level = 0;          // ? The deepest "C0.2" state
+        constexpr std::uint64_t cycles_per_us = 3ull * 1000ull; // ? Around 3K cycles per microsecond
+        constexpr std::uint32_t sleep_level = 0;                // ? The deepest "C0.2" state
 
         // Now we need to fetch the current time in cycles, add a delay, and sleep until that time is reached.
         // Using intrinsics from `<x86intrin.h>` it may look like:
@@ -1513,25 +1542,26 @@ struct x86_tpause_t {
             "mov    %[hi], %%edx\n\t"       // deadline_hi
             ".byte  0x66, 0x0F, 0xAE, 0xF3" // TPAUSE EBX
             :
-            : [lo] "r"(deadline_lo), [hi] "r"(deadline_lo), "b"(sleep_level)
+            : [lo] "r"(deadline_lo), [hi] "r"(deadline_hi), "b"(sleep_level)
             : "eax", "edx", "memory", "cc");
     }
 };
 
-#pragma GCC pop_options
 #if defined(__clang__)
 #pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
 #endif
 
-#endif // _FU_DETECT_ARCH_X86_64
+#endif // FU_DETECT_ARCH_X86_64_
 
-#if _FU_DETECT_ARCH_RISC5
+#if FU_DETECT_ARCH_RISC5_
 
 struct risc5_pause_t {
     inline void operator()() const noexcept { __asm__ __volatile__("pause"); }
 };
 
-#endif // _FU_DETECT_ARCH_RISC5
+#endif // FU_DETECT_ARCH_RISC5_
 
 #endif
 
@@ -1542,14 +1572,14 @@ struct risc5_pause_t {
 inline capabilities_t cpu_capabilities() noexcept {
     capabilities_t caps = capabilities_unknown_k;
 
-#if _FU_DETECT_ARCH_X86_64
+#if FU_DETECT_ARCH_X86_64_
 
     // Check for basic PAUSE instruction support (always available on x86-64)
     caps = static_cast<capabilities_t>(caps | capability_x86_pause_k);
 
-#if _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
+#if FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // CPUID to check for WAITPKG support (TPAUSE instruction)
-    std::uint32_t eax, ebx, ecx, edx;
+    std::uint32_t eax, __attribute__((unused)) ebx, ecx, __attribute__((unused)) edx;
 
     // CPUID leaf 7, sub-leaf 0 for structured extended feature flags
     eax = 7, ecx = 0;
@@ -1557,9 +1587,11 @@ inline capabilities_t cpu_capabilities() noexcept {
 
     // WAITPKG is bit 5 in ECX
     if (ecx & (1u << 5)) caps = static_cast<capabilities_t>(caps | capability_x86_tpause_k);
+    fu_unused_(ebx);
+    fu_unused_(edx);
 #endif
 
-#elif _FU_DETECT_ARCH_ARM64
+#elif FU_DETECT_ARCH_ARM64_
 
     // Basic YIELD is always available on AArch64
     caps = static_cast<capabilities_t>(caps | capability_arm64_yield_k);
@@ -1570,7 +1602,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     size_t size = sizeof(wfet_support);
     if (sysctlbyname("hw.optional.arm.FEAT_WFxT", &wfet_support, &size, NULL, 0) == 0 && wfet_support)
         caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
-#elif _FU_WITH_ASM_YIELDS // We use inline assembly - unavailable in MSVC
+#elif FU_WITH_ASM_YIELDS_ // We use inline assembly - unavailable in MSVC
     // On non-Apple ARM systems, try to read the system register
     // Note: This may fail on some systems where userspace access is restricted
     std::uint64_t id_aa64isar2_el0 = 0;
@@ -1580,7 +1612,7 @@ inline capabilities_t cpu_capabilities() noexcept {
     if (wfet_field >= 2) caps = static_cast<capabilities_t>(caps | capability_arm64_wfet_k);
 #endif
 
-#elif _FU_DETECT_ARCH_RISC5
+#elif FU_DETECT_ARCH_RISC5_
 
     // Basic PAUSE is available on RISC-V with Zihintpause extension
     // For now, we assume it's available if we're on RISC-V
@@ -1651,7 +1683,8 @@ struct ram_page_setting_t {
  *  @retval Socket ID (>= 0) if successful.
  *  @retval -1 if failed.
  */
-static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept {
+FU_MAYBE_UNUSED_ static inline numa_socket_id_t get_socket_id_for_core(
+    FU_MAYBE_UNUSED_ numa_core_id_t core_id) noexcept {
 
     int socket_id = -1;
 
@@ -1677,11 +1710,11 @@ static numa_socket_id_t get_socket_id_for_core(numa_core_id_t core_id) noexcept 
  *  @retval The size of a memory page in bytes, typically 4096 on most systems.
  *  @note On Linux, this is the system page size, which may differ from Huge Pages sizes.
  */
-static std::size_t get_ram_page_size() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_page_size() noexcept {
 #if FU_ENABLE_NUMA
-    return ::numa_pagesize();
+    return static_cast<std::size_t>(::numa_pagesize());
 #elif defined(__unix__) || defined(__unix) || defined(unix) || defined(__APPLE__)
-    return ::sysconf(_SC_PAGESIZE);
+    return static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
 #else
     return 4096;
 #endif
@@ -1692,7 +1725,7 @@ static std::size_t get_ram_page_size() noexcept {
  *  @retval Total system RAM in bytes, or 0 if detection fails.
  *  @note This function provides cross-platform detection of total physical memory.
  */
-static std::size_t get_ram_total_volume() noexcept {
+FU_MAYBE_UNUSED_ static inline std::size_t get_ram_total_volume() noexcept {
 #if defined(__linux__)
     // On Linux, read from /proc/meminfo
     FILE *meminfo_file = ::fopen("/proc/meminfo", "r");
@@ -1784,7 +1817,7 @@ class ram_page_settings {
      *  @brief Fetches all available huge page sizes for the given NUMA node.
      *  @note Kernel support doesn't mean that pages of that size have a valid mount point.
      */
-    bool try_harvest(numa_node_id_t node_id) noexcept {
+    bool try_harvest(FU_MAYBE_UNUSED_ numa_node_id_t node_id) noexcept {
         assert(node_id >= 0 && "NUMA node ID must be non-negative");
 
 #if FU_ENABLE_NUMA // We need Linux for `opendir`
@@ -1889,6 +1922,7 @@ class ram_page_settings {
         count_sizes_ = count_sizes;
         return true;
 #else
+        fu_unused_(node_id);
         return false;
 #endif
     }
@@ -1969,7 +2003,7 @@ struct numa_node {
 using numa_node_t = numa_node<>;
 
 template <typename value_type_, typename comparator_type_ = std::less<value_type_>>
-void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = comparator_type_()) noexcept {
+void bubble_sort(value_type_ *array, std::size_t size, comparator_type_ comp = {}) noexcept {
     assert(array != nullptr && "Array must not be null");
     for (std::size_t i = 0; i < size - 1; ++i)
         for (std::size_t j = 0; j < size - i - 1; ++j)
@@ -1992,11 +2026,11 @@ struct numa_topology {
     static constexpr std::size_t max_page_sizes_k = max_page_sizes_;
 
   private:
+    allocator_t allocator_ {};
     numa_node_t *nodes_ {nullptr};
     numa_core_id_t *node_core_ids_ {nullptr}; // ? Unsigned integers in [0, threads_count), grouped by NUMA node
     std::size_t nodes_count_ {0};             // ? Number of NUMA nodes
     std::size_t cores_count_ {0};             // ? Total number of cores in all nodes
-    allocator_t allocator_ {};
 
   public:
     constexpr numa_topology() noexcept = default;
@@ -2070,7 +2104,7 @@ struct numa_topology {
         numa_mask = ::numa_allocate_cpumask();
         if (!numa_mask) goto failed_harvest; // ! Allocation failed
 
-        // First pass – measure
+        // First pass - measure
         max_numa_node_id = ::numa_max_node();
         for (numa_node_id_t node_id = 0; node_id <= max_numa_node_id; ++node_id) {
             long long dummy;
@@ -2084,7 +2118,7 @@ struct numa_topology {
         }
         if (fetched_nodes == 0) goto failed_harvest; // ! Zero nodes is not a valid state
 
-        // Second pass – allocate
+        // Second pass - allocate
         nodes_ptr = nodes_alloc.allocate(fetched_nodes);
         core_ids_ptr = cores_alloc.allocate(fetched_cores);
         if (!nodes_ptr || !core_ids_ptr) goto failed_harvest; // ! Allocation failed
@@ -2106,7 +2140,7 @@ struct numa_topology {
 
             // Most likely, this will fill `core_ids_ptr` with `std::iota`-like values
             for (std::size_t bit_offset = 0; bit_offset < numa_mask->size; ++bit_offset)
-                if (::numa_bitmask_isbitset(numa_mask, bit_offset))
+                if (::numa_bitmask_isbitset(numa_mask, static_cast<unsigned int>(bit_offset)))
                     core_ids_ptr[core_index++] = static_cast<numa_core_id_t>(bit_offset);
 
             // Fetch Huge Page sizes for this NUMA node
@@ -2142,7 +2176,7 @@ struct numa_topology {
      *  @brief Copy-assigns the topology from @p other.
      *
      *  Instead of a copy-constructor we expose an explicit operation that can
-     *  FAIL – returning `false` if *any* intermediate allocation fails.
+     *  FAIL - returning `false` if *any* intermediate allocation fails.
      *
      *  @param other Source topology.
      *  @retval true  Success, the current instance now owns a deep copy.
@@ -2170,7 +2204,8 @@ struct numa_topology {
         }
 
         // Deep copy
-        std::memcpy(scratch_core_ids, other.node_core_ids_, other.cores_count_ * sizeof(numa_core_id_t));
+        if (other.cores_count_ > 0)
+            std::memcpy(scratch_core_ids, other.node_core_ids_, other.cores_count_ * sizeof(numa_core_id_t));
         for (std::size_t i = 0; i < other.nodes_count_; ++i) {
             scratch_nodes[i] = other.nodes_[i];
             // Re-base `first_core_id` so it points into our own core-id block
@@ -2189,18 +2224,23 @@ struct numa_topology {
 
 using numa_topology_t = numa_topology<>;
 
+static constexpr std::size_t page_size_4k = 4ull * 1024ull;                       // 4 KB
+static constexpr std::size_t page_size_2m_k = 2ull * 1024ull * 1024ull;           // 2 MB
+static constexpr std::size_t page_size_1g_k = 1ull * 1024ull * 1024ull * 1024ull; // 1 GB
+
 /**
  *  @brief Tries binding the given address range to a specific NUMA @p `node_id`.
  *  @retval true if binding succeeded, false otherwise.
  */
-static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline bool linux_numa_bind(void *ptr, std::size_t size_bytes,
+                                                    numa_node_id_t node_id) noexcept {
 #if FU_ENABLE_NUMA
     // Pin the memory - that may require an extra allocation for `node_mask` on some systems
     ::nodemask_t node_mask;
     ::bitmask node_mask_as_bitset;
     node_mask_as_bitset.size = sizeof(node_mask) * 8;
     node_mask_as_bitset.maskp = &node_mask.n[0];
-    ::numa_bitmask_setbit(&node_mask_as_bitset, node_id);
+    ::numa_bitmask_setbit(&node_mask_as_bitset, static_cast<unsigned int>(node_id));
     int mbind_flags;
 #if defined(MPOL_F_STATIC_NODES)
     mbind_flags = MPOL_F_STATIC_NODES;
@@ -2208,10 +2248,14 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
     mbind_flags = 1 << 15;
 #endif // MPOL_F_STATIC_NODES
 
-    long binding_status = ::mbind(ptr, size_bytes, MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1, mbind_flags);
+    long binding_status = ::mbind(ptr, size_bytes, MPOL_BIND, &node_mask.n[0], sizeof(node_mask) * 8 - 1,
+                                  static_cast<unsigned int>(mbind_flags));
     if (binding_status < 0) return false; // ! Binding failed
     return true;                          // ? Binding succeeded
 #else
+    fu_unused_(ptr);
+    fu_unused_(size_bytes);
+    fu_unused_(node_id);
     return false;
 #endif // FU_ENABLE_NUMA
 }
@@ -2221,20 +2265,21 @@ static bool linux_numa_bind(void *ptr, std::size_t size_bytes, numa_node_id_t no
  *  @retval nullptr if allocation failed or the page size is unsupported.
  *  @retval pointer to the allocated memory on success.
  */
-static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes, numa_node_id_t node_id) noexcept {
+FU_MAYBE_UNUSED_ static inline void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes,
+                                                         numa_node_id_t node_id) noexcept {
     assert(node_id >= 0 && "NUMA node ID must be non-negative");
     assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
 
 #if FU_ENABLE_NUMA
 
     // In simple cases, just redirect to `numa_alloc_onnode`
-    if (page_size_bytes == ::numa_pagesize()) return ::numa_alloc_onnode(size_bytes, node_id);
+    if (page_size_bytes == static_cast<std::size_t>(::numa_pagesize())) return ::numa_alloc_onnode(size_bytes, node_id);
 
     // Make sure the page size makes sense for Linux
     int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    if (page_size_bytes == 4u * 1024u) { mmap_flags |= MAP_HUGETLB; }
-    else if (page_size_bytes == 2u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB; }
-    else if (page_size_bytes == 1u * 1024u * 1024u * 1024u) { mmap_flags |= MAP_HUGETLB | MAP_HUGE_1GB; }
+    if (page_size_bytes == page_size_4k) { mmap_flags |= MAP_HUGETLB; }
+    else if (page_size_bytes == page_size_2m_k) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_2MB); }
+    else if (page_size_bytes == page_size_1g_k) { mmap_flags |= MAP_HUGETLB | static_cast<int>(MAP_HUGE_1GB); }
     else { return nullptr; } // ! Unsupported page size
 
     // Under the hood, `numa_alloc_onnode` uses `mmap` and `mbind` to allocate memory
@@ -2247,13 +2292,21 @@ static void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_b
     }
     return result_ptr;
 #else
+    fu_unused_(size_bytes);
+    fu_unused_(page_size_bytes);
+    fu_unused_(node_id);
     return nullptr;
 #endif // FU_ENABLE_NUMA
 }
 
-static void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+FU_MAYBE_UNUSED_ static inline void linux_numa_free(void *ptr, std::size_t size_bytes) noexcept {
+    assert(ptr != nullptr && "Pointer must not be null");
+    assert(size_bytes > 0 && "Size must be greater than zero");
 #if FU_ENABLE_NUMA
     numa_free(ptr, size_bytes);
+#else
+    fu_unused_(ptr);
+    fu_unused_(size_bytes);
 #endif
 }
 
@@ -2288,7 +2341,7 @@ struct linux_numa_allocator {
         : node_id_(id), default_page_size_(paging) {}
 
     template <typename other_type_>
-    constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
+    explicit constexpr linux_numa_allocator(linux_numa_allocator<other_type_> const &o) noexcept
         : node_id_(o.node_id()), default_page_size_(o.default_page_size()) {}
 
     /**
@@ -2335,12 +2388,12 @@ struct linux_numa_allocator {
         size_type const size_bytes = size * sizeof(value_type);
 
         // Try 1 GB Huge Pages, for buffers larger than 2 GB
-        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
-            if (auto result = allocate_at_least(size, 1u * 1024u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_1g_k))
+            if (auto result = allocate_at_least(size, page_size_1g_k); result) return result;
 
         // Try 2 MB Huge Pages, for buffers larger than 4 MB
-        if (size_bytes >= 4u * 1024u * 1024u)
-            if (auto result = allocate_at_least(size, 2u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_2m_k))
+            if (auto result = allocate_at_least(size, page_size_2m_k); result) return result;
 
         return allocate_at_least(size, default_page_size_);
     }
@@ -2357,12 +2410,12 @@ struct linux_numa_allocator {
         size_type const size_bytes = size * sizeof(value_type);
 
         // Try 1 GB Huge Pages, for buffers larger than 2 GB
-        if (size_bytes >= 2u * 1024u * 1024u * 1024u)
-            if (auto result = allocate(size, 1u * 1024u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_1g_k))
+            if (auto result = allocate(size, page_size_1g_k); result) return result;
 
         // Try 2 MB Huge Pages, for buffers larger than 4 MB
-        if (size_bytes >= 4u * 1024u * 1024u)
-            if (auto result = allocate(size, 2u * 1024u * 1024u); result) return result;
+        if (size_bytes >= (2u * page_size_2m_k))
+            if (auto result = allocate(size, page_size_2m_k); result) return result;
 
         return allocate(size, default_page_size_);
     }
@@ -2442,6 +2495,7 @@ struct linux_colocated_pool {
     using epoch_index_t = index_t;  // ? A.k.a. number of previous API calls in [0, UINT_MAX)
     using thread_index_t = index_t; // ? A.k.a. "core index" or "thread ID" in [0, threads_count)
     using colocated_thread_t = colocated_thread<thread_index_t>;
+    using prong_t = colocated_prong<index_t>;
 
     using punned_fork_context_t = void *;                                     // ? Pointer to the on-stack lambda
     using trampoline_t = void (*)(punned_fork_context_t, colocated_thread_t); // ? Wraps lambda's `operator()`
@@ -2630,17 +2684,17 @@ struct linux_colocated_pool {
         // - `EPERM` if we don't have the right permissions.
         for (thread_index_t i = use_caller_thread; i < threads; ++i) {
 
-            pthread_t pthread_handle;
-            int creation_result = ::pthread_create(&pthread_handle, NULL, &_posix_worker_loop, this);
-            pthreads_[i].handle.store(pthread_handle, std::memory_order_relaxed);
+            pthread_t new_pthread_handle;
+            int creation_result = ::pthread_create(&new_pthread_handle, nullptr, &_posix_worker_loop, this);
+            pthreads_[i].handle.store(new_pthread_handle, std::memory_order_relaxed);
             pthreads_[i].id.store(-1, std::memory_order_relaxed);
             pthreads_[i].core_id = -1; // ? Not pinned yet
 
             if (creation_result != 0) {
                 mood_.store(mood_t::die_k, std::memory_order_release);
                 for (thread_index_t j = use_caller_thread; j < i; ++j) {
-                    pthread_t pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
-                    int cancel_result = ::pthread_cancel(pthread_handle);
+                    pthread_t cancel_pthread_handle = pthreads_[j].handle.load(std::memory_order_relaxed);
+                    FU_MAYBE_UNUSED_ int cancel_result = ::pthread_cancel(cancel_pthread_handle);
                     assert(cancel_result == 0 && "Failed to cancel a thread");
                 }
                 reset_on_failure();
@@ -2656,8 +2710,8 @@ struct linux_colocated_pool {
                 name, name_,                                     //
                 static_cast<std::size_t>(node.first_core_id[i]), //
                 static_cast<std::size_t>(max_possible_cores));
-            pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int naming_result = ::pthread_setname_np(pthread_handle, name);
+            pthread_t naming_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            FU_MAYBE_UNUSED_ int naming_result = ::pthread_setname_np(naming_pthread_handle, name);
             assert(naming_result == 0 && "Failed to name a thread");
         }
 
@@ -2673,8 +2727,9 @@ struct linux_colocated_pool {
                 CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
 
                 // Assign the mask to the thread
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
                 pthreads_[i].core_id = cpu;
             }
@@ -2692,8 +2747,9 @@ struct linux_colocated_pool {
 
             // Assign the same mask to all threads
             for (thread_index_t i = 0; i < pthreads_.size(); ++i) {
-                pthread_t pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-                int pin_result = ::pthread_setaffinity_np(pthread_handle, cpu_set_size, cpu_set_ptr);
+                pthread_t pin_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+                FU_MAYBE_UNUSED_ int pin_result =
+                    ::pthread_setaffinity_np(pin_pthread_handle, cpu_set_size, cpu_set_ptr);
                 assert(pin_result == 0 && "Failed to pin a thread to a NUMA node");
             }
         }
@@ -2712,7 +2768,7 @@ struct linux_colocated_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -2723,7 +2779,7 @@ struct linux_colocated_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
 
         thread_index_t const threads = threads_count();
@@ -2805,8 +2861,8 @@ struct linux_colocated_pool {
         thread_index_t const threads = pthreads_.size();
         for (thread_index_t i = use_caller_thread; i != threads; ++i) {
             void *returned_value = nullptr;
-            pthread_t const pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
-            int const join_result = ::pthread_join(pthread_handle, &returned_value);
+            pthread_t const join_pthread_handle = pthreads_[i].handle.load(std::memory_order_relaxed);
+            FU_MAYBE_UNUSED_ int const join_result = ::pthread_join(join_pthread_handle, &returned_value);
             assert(join_result == 0 && "Thread join failed");
         }
 
@@ -2850,6 +2906,9 @@ struct linux_colocated_pool {
         }
     }
 
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
+
 #pragma endregion Control Flow
 
 #pragma region Indexed Task Scheduling
@@ -2860,7 +2919,7 @@ struct linux_colocated_pool {
      *  @param[in] fork The callback object, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_slices<fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -2873,7 +2932,7 @@ struct linux_colocated_pool {
      *  @param[in] fork The callback @b reference, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     void unsafe_for_slices(index_t const n, fork_type_ &fork) noexcept {
 
         invoke_for_slices<fork_type_ const &, index_t> invoker {n, threads_count(), fork};
@@ -2891,7 +2950,7 @@ struct linux_colocated_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_n<fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -2905,7 +2964,7 @@ struct linux_colocated_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_colocated_pool, invoke_for_n_dynamic<fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -2926,14 +2985,14 @@ struct linux_colocated_pool {
      *  @brief Returns the number of threads in one NUMA-specific local @b colocation.
      *  @retval Same value as `threads_count()`, as we only support one colocation.
      */
-    thread_index_t threads_count(index_t colocation_index) const noexcept { return threads_count(); }
+    thread_index_t threads_count(FU_MAYBE_UNUSED_ index_t colocation_index) const noexcept { return threads_count(); }
 
     /**
      *  @brief Converts a @p `global_thread_index` to a local thread index within a @b colocation.
      *  @retval Same value as @p `global_thread_index`, as we only support one colocation.
      */
     constexpr thread_index_t thread_local_index(thread_index_t global_thread_index,
-                                                index_t colocation_index = 0) const noexcept {
+                                                FU_MAYBE_UNUSED_ index_t colocation_index = 0) const noexcept {
         return global_thread_index;
     }
 
@@ -2947,15 +3006,16 @@ struct linux_colocated_pool {
 
     void _reset_affinity() noexcept {
         int const max_possible_cores = ::numa_num_possible_cpus();
-        cpu_set_t *cpu_set_ptr = CPU_ALLOC(max_possible_cores);
+        if (max_possible_cores <= 0) return; // ? No cores available, nothing to reset
+        cpu_set_t *cpu_set_ptr = CPU_ALLOC(static_cast<unsigned long>(max_possible_cores));
         if (!cpu_set_ptr) return;
-        std::size_t const cpu_set_size = CPU_ALLOC_SIZE(max_possible_cores);
+        std::size_t const cpu_set_size = CPU_ALLOC_SIZE(static_cast<unsigned long>(max_possible_cores));
         CPU_ZERO_S(cpu_set_size, cpu_set_ptr);
         for (int cpu = 0; cpu < max_possible_cores; ++cpu) CPU_SET_S(cpu, cpu_set_size, cpu_set_ptr);
-        int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
+        FU_MAYBE_UNUSED_ int pin_result = ::pthread_setaffinity_np(::pthread_self(), cpu_set_size, cpu_set_ptr);
         assert(pin_result == 0 && "Failed to reset the caller thread's affinity");
         CPU_FREE(cpu_set_ptr);
-        int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
+        FU_MAYBE_UNUSED_ int spread_result = ::numa_run_on_node(-1); // !? Shouldn't it be `numa_all_nodes`
         assert(spread_result == 0 && "Failed to reset the caller thread's NUMA node affinity");
     }
 
@@ -3015,8 +3075,8 @@ struct linux_colocated_pool {
                    (mood = pool->mood_.load(std::memory_order_acquire)) == mood_t::grind_k)
                 micro_yield();
 
-            if (_FU_UNLIKELY(mood == mood_t::die_k)) break;
-            if (_FU_UNLIKELY(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
+            if (fu_unlikely_(mood == mood_t::die_k)) break;
+            if (fu_unlikely_(mood == mood_t::chill_k) && (new_epoch == last_epoch)) {
                 struct timespec ts {0, static_cast<long>(pool->sleep_length_micros_ * 1000)};
                 ::clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
                 continue;
@@ -3027,7 +3087,7 @@ struct linux_colocated_pool {
             last_epoch = new_epoch;
 
             // ! The decrement must come after the task is executed
-            _FU_MAYBE_UNUSED thread_index_t const before_decrement =
+            FU_MAYBE_UNUSED_ thread_index_t const before_decrement =
                 pool->threads_to_sync_.fetch_sub(1, std::memory_order_release);
             assert(before_decrement > 0 && "We can't be here if there are no worker threads");
         }
@@ -3039,24 +3099,28 @@ struct linux_colocated_pool {
         char16_name_t &output_name, char const *base_name, //
         std::size_t const index, std::size_t const max_possible_cores) noexcept {
 
-        constexpr std::size_t max_visible_chars = sizeof(char16_name_t) - 1; // room left after the terminator
+        constexpr int max_visible_chars = sizeof(char16_name_t) - 1; // room left after the terminator
         int const digits = max_possible_cores < 10      ? 1
                            : max_possible_cores < 100   ? 2
                            : max_possible_cores < 1000  ? 3
                            : max_possible_cores < 10000 ? 4
-                                                        : 0; // fall‑through – let snprintf clip
+                                                        : 0; // fall-through - let `snprintf` clip
 
         if (digits == 0) {
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
-            //  "%s:%zu" - worst‑case  (base up to 11 chars) + ":" + up‑to‑2‑digit index
+#endif
+            //  "%s:%zu" - worst-case  (base up to 11 chars) + ":" + up-to-2-digit index
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%s:%zu", base_name, index + 1);
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
         }
         else {
-            int const base_len = static_cast<int>(max_visible_chars - digits - 1); // -1 for ':'
+            int const base_len = max_visible_chars - digits - 1; // -1 for ':'
             // "%.*s" - truncates base_name to base_len
-            // "%0*zu" - prints zero‑padded index using exactly 'digits' characters
+            // "%0*zu" - prints zero-padded index using exactly `digits` characters
             std::snprintf(&output_name[0], sizeof(char16_name_t), "%.*s:%0*zu", base_len, base_name, digits, index + 1);
         }
     }
@@ -3370,8 +3434,8 @@ struct linux_distributed_pool {
         for (index_t colocation_index = 0; colocation_index < colocations_count; ++colocation_index) {
             numa_node_t const &node = new_topology.node(colocation_index);
             numa_node_id_t const node_id = node.node_id;
-            linux_numa_allocator_t allocator {node_id};
-            unique_colocation_buffer_t colocation_padded_buffer(allocator);
+            linux_numa_allocator_t node_allocator {node_id};
+            unique_colocation_buffer_t colocation_padded_buffer(node_allocator);
             colocation_padded_buffer.try_resize(1);
             colocations[colocation_index] = std::move(colocation_padded_buffer);
         }
@@ -3393,7 +3457,6 @@ struct linux_distributed_pool {
         // Every NUMA pool is allocated separately
         // - the first one may be "inclusive".
         // - others are always "exclusive" to the caller thread.
-        bool const use_caller_thread = exclusivity == caller_inclusive_k;
         indexed_split<thread_index_t> threads_per_node(threads, colocations_count);
         if (!colocations[0].only().pool.try_spawn(first_node, threads_per_node[0].count, exclusivity, pin_granularity,
                                                   0, 0)) {
@@ -3427,7 +3490,7 @@ struct linux_distributed_pool {
      *  @sa For advanced resource management, consider `unsafe_for_threads` and `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool, fork_type_> for_threads(fork_type_ &&fork) noexcept {
         return {*this, std::forward<fork_type_>(fork)};
     }
@@ -3438,7 +3501,7 @@ struct linux_distributed_pool {
      *  @sa Use in conjunction with `unsafe_join`.
      */
     template <typename fork_type_>
-    _FU_REQUIRES((can_be_for_thread_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_thread_callback<fork_type_, index_t>()))
     void unsafe_for_threads(fork_type_ &fork) noexcept {
         assert(colocations_ && "Thread pools must be initialized before broadcasting");
 
@@ -3499,6 +3562,9 @@ struct linux_distributed_pool {
             colocations_[i].only().pool.sleep(wake_up_periodicity_micros);
     }
 
+    /** @brief Helper function to create a spin mutex with same yield characteristics. */
+    static spin_mutex<micro_yield_t, alignment_k> make_mutex() noexcept { return {}; }
+
 #pragma endregion Control Flow
 
 #pragma region Indexed Task Scheduling
@@ -3509,7 +3575,7 @@ struct linux_distributed_pool {
      *  @param[in] fork The callback, receiving the first @b `prong_t` and the slice length.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_slice_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_slice_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool,
                    invoke_distributed_for_slices<linux_distributed_pool, fork_type_, index_t>> //
         for_slices(index_t const n, fork_type_ &&fork) noexcept {
@@ -3528,7 +3594,7 @@ struct linux_distributed_pool {
      *  @sa `for_slices` if you prefer to receive workload slices over individual indices.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool, invoke_distributed_for_n<linux_distributed_pool, fork_type_, index_t>> //
         for_n(index_t const n, fork_type_ &&fork) noexcept {
 
@@ -3542,7 +3608,7 @@ struct linux_distributed_pool {
      *  @sa `for_n` for a more "balanced" evenly-splittable workload.
      */
     template <typename fork_type_ = dummy_lambda_t>
-    _FU_REQUIRES((can_be_for_task_callback<fork_type_, index_t>()))
+    FU_REQUIRES_((can_be_for_task_callback<fork_type_, index_t>()))
     broadcast_join<linux_distributed_pool,
                    invoke_distributed_for_n_dynamic<linux_distributed_pool, fork_type_, index_t>> //
         for_n_dynamic(index_t const n, fork_type_ &&fork) noexcept {
@@ -3602,12 +3668,12 @@ struct linux_distributed_pool {
 using linux_colocated_pool_t = linux_colocated_pool<>;
 using linux_distributed_pool_t = linux_distributed_pool<>;
 
-#if _FU_DETECT_CONCEPTS
+#if FU_DETECT_CONCEPTS_
 static_assert(is_unsafe_pool<basic_pool_t> && is_unsafe_pool<linux_colocated_pool_t>,
               "These thread pools must be flexible and support unsafe operations");
 static_assert(is_pool<basic_pool_t> && is_pool<linux_colocated_pool_t> && is_pool<linux_distributed_pool_t>,
               "These thread pools must be fully compatible with the high-level APIs");
-#endif // _FU_DETECT_CONCEPTS
+#endif // FU_DETECT_CONCEPTS_
 
 #endif // FU_ENABLE_NUMA
 #pragma endregion - NUMA Pools
@@ -3629,36 +3695,41 @@ struct logging_colors_t {
 #if defined(__unix__) || defined(__APPLE__)
         if (!::isatty(STDOUT_FILENO)) return;
 #endif
+#if defined(_WIN32)
+        // On Windows, assume color support is available
+        use_colors_ = true;
+#else
         char const *term = std::getenv("TERM");
         if (!term) return;
         use_colors_ = std::strstr(term, "color") != nullptr || std::strstr(term, "xterm") != nullptr ||
                       std::strstr(term, "screen") != nullptr || std::strcmp(term, "linux") == 0;
+#endif
     }
 
     /* ANSI style codes */
-    char const *reset() { return use_colors_ ? "\033[0m" : ""; }
-    char const *bold() { return use_colors_ ? "\033[1m" : ""; }
-    char const *dim() { return use_colors_ ? "\033[2m" : ""; }
+    char const *reset() const noexcept { return use_colors_ ? "\033[0m" : ""; }
+    char const *bold() const noexcept { return use_colors_ ? "\033[1m" : ""; }
+    char const *dim() const noexcept { return use_colors_ ? "\033[2m" : ""; }
 
     /* ANSI color codes */
-    char const *red() { return use_colors_ ? "\033[31m" : ""; }
-    char const *green() { return use_colors_ ? "\033[32m" : ""; }
-    char const *yellow() { return use_colors_ ? "\033[33m" : ""; }
-    char const *blue() { return use_colors_ ? "\033[34m" : ""; }
-    char const *magenta() { return use_colors_ ? "\033[35m" : ""; }
-    char const *cyan() { return use_colors_ ? "\033[36m" : ""; }
-    char const *white() { return use_colors_ ? "\033[37m" : ""; }
-    char const *gray() { return use_colors_ ? "\033[90m" : ""; }
+    char const *red() const noexcept { return use_colors_ ? "\033[31m" : ""; }
+    char const *green() const noexcept { return use_colors_ ? "\033[32m" : ""; }
+    char const *yellow() const noexcept { return use_colors_ ? "\033[33m" : ""; }
+    char const *blue() const noexcept { return use_colors_ ? "\033[34m" : ""; }
+    char const *magenta() const noexcept { return use_colors_ ? "\033[35m" : ""; }
+    char const *cyan() const noexcept { return use_colors_ ? "\033[36m" : ""; }
+    char const *white() const noexcept { return use_colors_ ? "\033[37m" : ""; }
+    char const *gray() const noexcept { return use_colors_ ? "\033[90m" : ""; }
 
     /* Compound styles */
-    char const *bold_red() { return use_colors_ ? "\033[1;31m" : ""; }
-    char const *bold_green() { return use_colors_ ? "\033[1;32m" : ""; }
-    char const *bold_yellow() { return use_colors_ ? "\033[1;33m" : ""; }
-    char const *bold_blue() { return use_colors_ ? "\033[1;34m" : ""; }
-    char const *bold_magenta() { return use_colors_ ? "\033[1;35m" : ""; }
-    char const *bold_cyan() { return use_colors_ ? "\033[1;36m" : ""; }
-    char const *bold_white() { return use_colors_ ? "\033[1;37m" : ""; }
-    char const *bold_gray() { return use_colors_ ? "\033[1;90m" : ""; }
+    char const *bold_red() const noexcept { return use_colors_ ? "\033[1;31m" : ""; }
+    char const *bold_green() const noexcept { return use_colors_ ? "\033[1;32m" : ""; }
+    char const *bold_yellow() const noexcept { return use_colors_ ? "\033[1;33m" : ""; }
+    char const *bold_blue() const noexcept { return use_colors_ ? "\033[1;34m" : ""; }
+    char const *bold_magenta() const noexcept { return use_colors_ ? "\033[1;35m" : ""; }
+    char const *bold_cyan() const noexcept { return use_colors_ ? "\033[1;36m" : ""; }
+    char const *bold_white() const noexcept { return use_colors_ ? "\033[1;37m" : ""; }
+    char const *bold_gray() const noexcept { return use_colors_ ? "\033[1;90m" : ""; }
 };
 
 /**
@@ -3700,7 +3771,7 @@ struct log_memory_volume_t {
 };
 
 /**
- *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0–3,5,7,8,10–12".
+ *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0-3,5,7,8,10-12".
  */
 struct log_core_range_t {
 
@@ -3728,7 +3799,7 @@ struct log_core_range_t {
 
         if (is_contiguous) {
             std::snprintf(                            //
-                buffer, buffer_size, "%s%d%s–%s%d%s", //
+                buffer, buffer_size, "%s%d%s-%s%d%s", //
                 value_color, core_ids[0], reset_color, value_color, core_ids[count - 1], reset_color);
         }
         else {
@@ -3736,8 +3807,8 @@ struct log_core_range_t {
             if (count <= 8) {
                 int written = std::snprintf(buffer, buffer_size, "%s%d%s", value_color, core_ids[0], reset_color);
                 for (std::size_t i = 1; i < count && written < static_cast<int>(buffer_size) - 1; ++i)
-                    written += std::snprintf(                               //
-                        buffer + written, buffer_size - written, ",%s%d%s", //
+                    written += std::snprintf(                                                         //
+                        buffer + written, buffer_size - static_cast<std::size_t>(written), ",%s%d%s", //
                         value_color, core_ids[i], reset_color);
             }
             else {
@@ -3839,21 +3910,22 @@ struct log_numa_topology_t {
                 if (ps.bytes_per_page <= 4096) continue; // Skip regular pages
 
                 if (first_page) {
-                    pos += std::snprintf(                                               //
+                    pos += static_cast<std::size_t>(std::snprintf(                      //
                         line_buffer + pos, sizeof(line_buffer) - pos, " • %sPages:%s ", //
-                        colors.magenta(), /* "Pages:" */ colors.reset());
+                        colors.magenta(), /* "Pages:" */ colors.reset()));
                     first_page = false;
                 }
-                else { pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, " "); }
+                else
+                    pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, " "));
 
                 char page_size_str[32], page_volume_str[32];
                 std::size_t free_bytes = ps.free_pages * ps.bytes_per_page;
                 log_memory_volume_t {}(ps.bytes_per_page, page_size_str, sizeof(page_size_str), colorless);
                 log_memory_volume_t {}(free_bytes, page_volume_str, sizeof(page_volume_str), colorless);
 
-                pos += std::snprintf(                                            //
+                pos += static_cast<std::size_t>(std::snprintf(                   //
                     line_buffer + pos, sizeof(line_buffer) - pos, "%s%s (%s)%s", //
-                    colors.bold_magenta(), page_size_str, page_volume_str, colors.reset());
+                    colors.bold_magenta(), page_size_str, page_volume_str, colors.reset()));
             }
 
             std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n");
@@ -3886,38 +3958,43 @@ struct log_capabilities_t {
 
         // CPU Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s├─ %sCPU:%s ", colors.dim(), colors.cyan(), colors.reset());
-        int pos = static_cast<int>(std::strlen(line_buffer));
+        std::size_t pos = std::strlen(line_buffer);
 
         bool first_cpu = true;
         if (caps & capability_x86_pause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 PAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 PAUSE%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_x86_tpause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 TPAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sx86 TPAUSE%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_arm64_yield_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 YIELD%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sARM64 YIELD%s", first_cpu ? "" : " • ",
+                                                          colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_arm64_wfet_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 WFET%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sARM64 WFET%s",
+                                                       first_cpu ? "" : " • ", colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
         if (caps & capability_risc5_pause_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sRISC-V PAUSE%s",
-                                 first_cpu ? "" : " • ", colors.bold_green(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sRISC-V PAUSE%s", first_cpu ? "" : " • ",
+                                                          colors.bold_green(), colors.reset()));
             first_cpu = false;
         }
 
         if (first_cpu) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
-                                 colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%sNone detected%s", colors.dim(), colors.reset()));
         }
 
         std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n");
@@ -3925,28 +4002,31 @@ struct log_capabilities_t {
 
         // Memory Capabilities row
         std::snprintf(line_buffer, sizeof(line_buffer), "%s└─ %sRAM:%s ", colors.dim(), colors.cyan(), colors.reset());
-        pos = static_cast<int>(std::strlen(line_buffer));
+        pos = std::strlen(line_buffer);
 
         bool first_mem = true;
         if (caps & capability_numa_aware_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sNUMA%s", first_mem ? "" : " • ",
-                                 colors.bold_yellow(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sNUMA%s",
+                                                       first_mem ? "" : " • ", colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
         if (caps & capability_huge_pages_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sHuge Pages%s",
-                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            pos +=
+                static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sHuge Pages%s",
+                                                       first_mem ? "" : " • ", colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
         if (caps & capability_huge_pages_transparent_k) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%s%sTransparent Huge Pages%s",
-                                 first_mem ? "" : " • ", colors.bold_yellow(), colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%s%sTransparent Huge Pages%s", first_mem ? "" : " • ",
+                                                          colors.bold_yellow(), colors.reset()));
             first_mem = false;
         }
 
         if (first_mem) {
-            pos += std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "%sNone detected%s", colors.dim(),
-                                 colors.reset());
+            pos += static_cast<std::size_t>(std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos,
+                                                          "%sNone detected%s", colors.dim(), colors.reset()));
         }
 
         std::snprintf(line_buffer + pos, sizeof(line_buffer) - pos, "\n\n");

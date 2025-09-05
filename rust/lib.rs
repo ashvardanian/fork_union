@@ -314,9 +314,9 @@ impl std::error::Error for Error {}
 extern "C" {
 
     // Library metadata
-    fn fu_version_major() -> usize;
-    fn fu_version_minor() -> usize;
-    fn fu_version_patch() -> usize;
+    fn fu_version_major() -> c_int;
+    fn fu_version_minor() -> c_int;
+    fn fu_version_patch() -> c_int;
     fn fu_enabled_numa() -> c_int;
     fn fu_capabilities_string() -> *const c_char;
 
@@ -459,17 +459,17 @@ pub fn numa_enabled() -> bool {
 
 /// Returns the major version number of the Fork Union library.
 pub fn version_major() -> usize {
-    unsafe { fu_version_major() }
+    unsafe { fu_version_major() as usize }
 }
 
 /// Returns the minor version number of the Fork Union library.
 pub fn version_minor() -> usize {
-    unsafe { fu_version_minor() }
+    unsafe { fu_version_minor() as usize }
 }
 
 /// Returns the patch version number of the Fork Union library.
 pub fn version_patch() -> usize {
-    unsafe { fu_version_patch() }
+    unsafe { fu_version_patch() as usize }
 }
 
 /// Returns the library version as a tuple of (major, minor, patch).
@@ -477,10 +477,10 @@ pub fn version() -> (usize, usize, usize) {
     (version_major(), version_minor(), version_patch())
 }
 
-/// Minimalistic, fixed‑size thread‑pool for blocking scoped parallelism.
+/// Minimalistic, fixed-size thread-pool for blocking scoped parallelism.
 ///
 /// This is a safe Rust wrapper around the precompiled C thread pool implementation.
-/// The current thread **participates** in the work, so for `N`‑way parallelism the
+/// The current thread **participates** in the work, so for `N`-way parallelism the
 /// implementation actually spawns **N − 1** background workers and runs the last
 /// slice on the caller thread.
 ///
@@ -2850,9 +2850,7 @@ mod tests {
         let colocations = count_colocations();
         let qos = count_quality_levels();
 
-        std::println!(
-            "Cores: {cores}, NUMA: {numa}, Colocations: {colocations}, QoS: {qos}"
-        );
+        std::println!("Cores: {cores}, NUMA: {numa}, Colocations: {colocations}, QoS: {qos}");
         assert!(cores > 0);
     }
 

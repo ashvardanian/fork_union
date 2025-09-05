@@ -1,7 +1,7 @@
 [package]
 name = "fork_union"
 description = "Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library"
-version = "2.1.1"
+version = "2.2.5"
 edition = "2021"
 authors = ["Ash Vardanian"]
 license = "Apache-2.0"
@@ -17,9 +17,10 @@ cc = "1.2.29"
 [features]
 default = ["std"]
 std = []
+numa = []
 
 [profile.release]
-opt-level = 3     # Corresponds to -O3
+opt-level = 2     # Corresponds to -O2
 lto = true        # Enables Link Time Optimization for further optimizations
 codegen-units = 1 # May increase compilation time but optimizes further
 rpath = false     # On some systems, setting this to false can help with optimizations

@@ -1,17 +1,17 @@
 # Shared logic for setting target properties for tests and examples
 function (set_target_properties_for_fork_union_script target_name)
-    target_link_libraries(${TGT} PRIVATE fork_union)
+    target_link_libraries(${target_name} PRIVATE fork_union)
 
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         # This warning annoys us by reminding, that before GCC 4.6 the ABI for passing objects aligned to ≥32-bytes was
         # different... but that GCC version was released in 2014, over a decade ago.
-        target_compile_options(${TGT} PRIVATE -Wno-psabi)
+        target_compile_options(${target_name} PRIVATE -Wno-psabi)
     endif ()
 
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
-        message(STATUS "Enabling optimizations for ${TGT}")
-        target_compile_options(${TGT} PRIVATE -O3)
+        message(STATUS "Enabling optimizations for ${target_name}")
+        target_compile_options(${target_name} PRIVATE -O2)
     endif ()
 
     # if we're not in Release mode
@@ -23,13 +23,13 @@ function (set_target_properties_for_fork_union_script target_name)
         )
             # Using thread sanitizers caused all kinds of stalls on NUMA systems
             # ~~~
-            # message(STATUS "Enabling ThreadSanitizer for ${TGT}")
-            # target_compile_options(${TGT} PRIVATE -fsanitize=undefined,thread)
-            # target_link_options(${TGT} PRIVATE -fsanitize=undefined,thread)
+            # message(STATUS "Enabling ThreadSanitizer for ${target_name}")
+            # target_compile_options(${target_name} PRIVATE -fsanitize=undefined,thread)
+            # target_link_options(${target_name} PRIVATE -fsanitize=undefined,thread)
             # ~~~
-            target_compile_options(${TGT} PRIVATE -g -O0)
-            target_compile_options(${TGT} PRIVATE -fno-omit-frame-pointer)
-            target_link_options(${TGT} PRIVATE)
+            target_compile_options(${target_name} PRIVATE -g -O0)
+            target_compile_options(${target_name} PRIVATE -fno-omit-frame-pointer)
+            target_link_options(${target_name} PRIVATE)
         endif ()
     endif ()
 endfunction ()
@@ -48,6 +48,7 @@ foreach (STD IN LISTS CXX_STANDARDS)
         PROPERTIES CXX_STANDARD ${STD}
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
+                   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
     # register it as a CTest test
@@ -55,10 +56,11 @@ foreach (STD IN LISTS CXX_STANDARDS)
     set_target_properties_for_fork_union_script(${TGT})
 
     # Link against `libatomic` for older GCC versions that might need it
-    # Note: AppleClang doesn't need `libatomic` as atomic operations are built-in
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR 
-        (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
-        target_link_libraries(${TGT} PRIVATE -latomic)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+        # AppleClang doesn't need `libatomic` as atomic operations are built-in
+        if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+            target_link_libraries(${TGT} PRIVATE -latomic)
+        endif ()
     endif ()
 
 endforeach ()

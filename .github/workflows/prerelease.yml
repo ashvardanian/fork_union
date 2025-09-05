@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -31,6 +31,9 @@ jobs:
           update-version-in: |
             CMakeLists.txt:^\s*VERSION (\d+\.\d+\.\d+)
             Cargo.toml:^version = "(\d+\.\d+\.\d+)"
+            README.md:^\s*GIT_TAG v(\d+\.\d+\.\d+)
+            README.md:^\s*fork_union\s*=\s*"(\d+\.\d+\.\d+)"
+            README.md:^\s*fork_union\s*=\s*\{\s*version\s*=\s*"(\d+\.\d+\.\d+)"
           update-major-version-in: |
             include/fork_union.hpp:^#define FORK_UNION_VERSION_MAJOR (\d+)
           update-minor-version-in: |
@@ -40,29 +43,27 @@ jobs:
           dry-run: "true"
 
   test_ubuntu_gcc:
-    name: Ubuntu (GCC 14)
+    name: Ubuntu (GCC)
     runs-on: ubuntu-24.04
     env:
       CC: gcc
       CXX: g++
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v5
 
-        # C/C++
       - name: Build C/C++
         run: |
           sudo apt update
-          sudo apt install -y cmake build-essential libomp-dev gcc-12 g++-12
+          sudo apt install -y cmake build-essential libomp-dev
           cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -74,18 +75,17 @@ jobs:
         run: cargo test
 
   test_ubuntu_clang:
-    name: Ubuntu (Clang 18)
+    name: Ubuntu (Clang)
     runs-on: ubuntu-24.04
     env:
       CC: clang
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v5
 
         # C/C++
-        # Clang 16 isn't available from default repos on Ubuntu 22.04, so we have to install it manually
       - name: Build C/C++
         run: |
           sudo apt update
@@ -94,10 +94,9 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -113,10 +112,9 @@ jobs:
     runs-on: macos-14
 
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v5
 
-        # C/C++
       - name: Build C/C++
         run: |
           brew update
@@ -125,10 +123,9 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
-          build_artifacts/scripts/fork_union_test_cpp17
-          build_artifacts/scripts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable
@@ -143,21 +140,21 @@ jobs:
     name: Windows
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - run: git submodule update --init --recursive
+      - name: Checkout
+        uses: actions/checkout@v5
 
-        # C/C++
       - name: Build C/C++
         run: |
           choco install cmake
           cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build_artifacts --config RelWithDebInfo
+      - name: List build artifacts
+        run: Get-ChildItem -Recurse .\build_artifacts
       - name: Test C++
         run: |
-          .\build_artifacts\scripts\fork_union_test_cpp17.exe
-          .\build_artifacts\scripts\fork_union_test_cpp20.exe
+          .\build_artifacts\fork_union_test_cpp17.exe
+          .\build_artifacts\fork_union_test_cpp20.exe
 
-        # Rust
       - name: Set up Rust
         run: |
           rustup update stable

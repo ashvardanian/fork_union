@@ -114,7 +114,8 @@ inline void apply_force(body_t &bi, vector3_t const &f) noexcept {
 
 #pragma region - Backends
 
-void iteration_openmp_static(body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces, std::size_t n) noexcept {
+void iteration_openmp_static(FU_MAYBE_UNUSED_ body_t *_FU_RESTRICT bodies,
+                             FU_MAYBE_UNUSED_ vector3_t *_FU_RESTRICT forces, FU_MAYBE_UNUSED_ std::size_t n) noexcept {
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
@@ -127,7 +128,9 @@ void iteration_openmp_static(body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRIC
 #endif
 }
 
-void iteration_openmp_dynamic(body_t *_FU_RESTRICT bodies, vector3_t *_FU_RESTRICT forces, std::size_t n) noexcept {
+void iteration_openmp_dynamic(FU_MAYBE_UNUSED_ body_t *_FU_RESTRICT bodies,
+                              FU_MAYBE_UNUSED_ vector3_t *_FU_RESTRICT forces,
+                              FU_MAYBE_UNUSED_ std::size_t n) noexcept {
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 1)
     for (std::size_t i = 0; i < n; ++i) {
@@ -188,7 +191,6 @@ void iteration_fork_union_numa_static(linux_distributed_pool_t &pool, body_t *_F
                                       body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
     using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
-    std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This is a quadratic complexity all-to-all interaction, and it's not clear how
     // it can "shard" to take advantage of NUMA locality, especially for a small `n` world.
@@ -224,7 +226,6 @@ void iteration_fork_union_numa_dynamic(linux_distributed_pool_t &pool, body_t *_
                                        body_t **_FU_RESTRICT bodies_numa_copies) noexcept {
 
     using colocated_prong_t = typename linux_distributed_pool_t::prong_t;
-    std::size_t const numa_nodes_count = pool.colocations_count();
 
     // This expressions is same as in `iteration_fork_union_numa_static` static version:
     pool.for_threads([&](auto thread_index) noexcept {
@@ -260,11 +261,23 @@ void iteration_fork_union_numa_dynamic(linux_distributed_pool_t &pool, body_t *_
 int main(void) {
     std::printf("Welcome to the Fork Union N-Body simulation!\n");
 
+    // Helper function to safely get environment variables
+    auto safe_getenv = [](char const *name) -> char const * {
+#if defined(_MSC_VER)
+        static thread_local char buffer[256];
+        size_t required_size;
+        errno_t err = getenv_s(&required_size, buffer, sizeof(buffer), name);
+        return (err == 0 && required_size > 0) ? buffer : nullptr;
+#else
+        return std::getenv(name); // ! Windows doesn't like this
+#endif
+    };
+
     // Read env vars
-    auto const n_str = std::getenv("NBODY_COUNT");
-    auto const iterations_str = std::getenv("NBODY_ITERATIONS");
-    auto const backend_str = std::getenv("NBODY_BACKEND");
-    auto const threads_str = std::getenv("NBODY_THREADS");
+    auto const n_str = safe_getenv("NBODY_COUNT");
+    auto const iterations_str = safe_getenv("NBODY_ITERATIONS");
+    auto const backend_str = safe_getenv("NBODY_BACKEND");
+    auto const threads_str = safe_getenv("NBODY_THREADS");
 
     // Parse env vars and validate
     std::size_t n = std::strtoull(n_str ? n_str : "0", nullptr, 10);
@@ -279,8 +292,8 @@ int main(void) {
     std::vector<vector3_t> forces(n);
 
     // Random generators are quite slow, but let's hope this doesn't take too long
-    std::uniform_real_distribution<float> coordinate_distribution(0.0, 1.0);
-    std::uniform_real_distribution<float> mass_distribution(1e20, 1e25);
+    std::uniform_real_distribution<float> coordinate_distribution(0.f, 1.f);
+    std::uniform_real_distribution<float> mass_distribution(1e20f, 1e25f);
     std::random_device random_device;
     std::mt19937 random_gen(random_device());
     for (std::size_t i = 0; i < n; ++i) {
