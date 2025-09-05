@@ -477,10 +477,10 @@ pub fn version() -> (usize, usize, usize) {
     (version_major(), version_minor(), version_patch())
 }
 
-/// Minimalistic, fixed‑size thread‑pool for blocking scoped parallelism.
+/// Minimalistic, fixed-size thread-pool for blocking scoped parallelism.
 ///
 /// This is a safe Rust wrapper around the precompiled C thread pool implementation.
-/// The current thread **participates** in the work, so for `N`‑way parallelism the
+/// The current thread **participates** in the work, so for `N`-way parallelism the
 /// implementation actually spawns **N − 1** background workers and runs the last
 /// slice on the caller thread.
 ///
