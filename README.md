@@ -89,6 +89,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
+For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
+
 ### Intro in C++
 
 To integrate into your C++ project, either just copy the `include/fork_union.hpp` file into your project, add a Git submodule, or CMake.
@@ -466,7 +468,9 @@ build_debug/fork_union_test_cpp20
 For Rust, use the following command:
 
 ```bash
-rustup toolchain install # for Alloc API
-cargo miri test          # to catch UBs
-cargo test --release     # to run the tests fast
+rustup toolchain install    # for Alloc API
+cargo miri test             # to catch UBs
+cargo build --features numa # for NUMA support on Linux
+cargo test --features numa --release        # to run the tests fast
+cargo test --release        # to run the tests fast
 ```

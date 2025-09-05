@@ -17,6 +17,7 @@ cc = "1.2.29"
 [features]
 default = ["std"]
 std = []
+numa = []
 
 [profile.release]
 opt-level = 2     # Corresponds to -O2
