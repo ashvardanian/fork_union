@@ -77,14 +77,16 @@ jobs:
     runs-on: ubuntu-24.04
     needs: versioning
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
           ref: "main"
-
-      - uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
           override: true
-      - uses: katyo/publish-crates@v2
+      - name: Publish crates
+        uses: katyo/publish-crates@v2
         with:
           registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
