@@ -120,7 +120,7 @@ jobs:
       - name: Build C/C++
         run: |
           brew update
-          brew install cmake
+          brew reinstall cmake
           cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
