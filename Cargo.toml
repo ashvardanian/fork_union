@@ -7,6 +7,21 @@ authors = ["Ash Vardanian"]
 license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/fork_union"
 rust-version = "1.64" # Introduced Core C FFI in stable Rust
+readme = "README.md"
+documentation = "https://docs.rs/fork_union"
+homepage = "https://github.com/ashvardanian/fork_union"
+keywords = ["numa", "parallel", "thread-pool", "allocator", "no-std"]
+categories = ["concurrency", "os::linux-apis", "external-ffi-bindings"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "build.rs",
+    "rust/**",
+    "include/**",
+    "c/**",
+]
+links = "fork_union"
 
 [lib]
 name = "fork_union"
