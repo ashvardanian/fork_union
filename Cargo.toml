@@ -6,6 +6,7 @@ edition = "2021"
 authors = ["Ash Vardanian"]
 license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/fork_union"
+rust-version = "1.64" # Introduced Core C FFI in stable Rust
 
 [lib]
 name = "fork_union"

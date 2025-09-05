@@ -483,9 +483,16 @@ build_debug/fork_union_test_cpp20
 For Rust, use the following command:
 
 ```bash
-rustup toolchain install    # for Alloc API
-cargo miri test             # to catch UBs
-cargo build --features numa # for NUMA support on Linux
-cargo test --features numa --release        # to run the tests fast
-cargo test --release        # to run the tests fast
+rustup toolchain install                # for Alloc API
+cargo miri test                         # to catch UBs
+cargo build --features numa             # for NUMA support on Linux
+cargo test --release                    # to run the tests fast
+cargo test --features numa --release    # for NUMA tests on Linux
+```
+
+To automatically detect the Minimum Supported Rust Version (MSRV):
+
+```sh
+cargo +stable install cargo-msrv
+cargo msrv find --ignore-lockfile
 ```
