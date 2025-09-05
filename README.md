@@ -157,8 +157,8 @@ int main() {
 }
 ```
 
-That's it.
 For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
+NUMA detection on Linux defaults to AUTO. Override with `-D FORK_UNION_ENABLE_NUMA=ON` or `OFF`.
 
 ## Alternatives & Differences
 

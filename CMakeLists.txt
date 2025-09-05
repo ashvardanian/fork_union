@@ -18,6 +18,14 @@ project(
     LANGUAGES CXX
 )
 
+# Options
+# - Control strict interface warnings for consumers
+option(FORK_UNION_STRICT "Propagate strict warnings (including -Werror) to consumers" OFF)
+
+# - Control NUMA enablement: AUTO, ON, OFF
+set(FORK_UNION_ENABLE_NUMA "AUTO" CACHE STRING "NUMA support mode: AUTO, ON, or OFF")
+set_property(CACHE FORK_UNION_ENABLE_NUMA PROPERTY STRINGS "AUTO;ON;OFF")
+
 # Enforce C++17 as the minimum standard for the project.
 set(PROJECT_CXX_STANDARD 17)
 set(PROJECT_CXX_EXTENSIONS OFF)
@@ -39,65 +47,67 @@ set_target_properties(
 )
 
 # Strictest possible compilation flags with fatal warnings
-target_compile_options(
-    fork_union
-    INTERFACE # GCC/Clang: Maximum warnings + treat warnings as errors + security hardening
-              $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall
-              -Wextra
-              -Wpedantic
-              -Werror
-              -Wconversion
-              -Wcast-qual
-              -Wcast-align
-              -Wunused
-              -Wno-unused-parameter
-              -Wno-unknown-pragmas
-              -Wno-sign-conversion
-              -Wno-unused-function
-              -Wshadow
-              -Wnon-virtual-dtor
-              -Wold-style-cast
-              -Woverloaded-virtual
-              -Wsign-promo
-              -Wno-null-dereference
-              -Wdouble-promotion>
-              $<$<AND:$<CXX_COMPILER_ID:GNU,Clang>,$<CONFIG:Release,RelWithDebInfo>>:-Wno-unused-variable>
-              # Additional GCC-specific warnings
-              $<$<CXX_COMPILER_ID:GNU>:-Wmisleading-indentation
-              -Wduplicated-cond
-              -Wduplicated-branches
-              -Wlogical-op
-              -Wno-null-dereference
-              -Wuseless-cast>
-              # Additional Clang-specific warnings
-              $<$<CXX_COMPILER_ID:Clang>:-Wmost
-              -Wthread-safety
-              -Wthread-safety-negative>
-              # MSVC: Maximum warnings + treat warnings as errors
-              $<$<CXX_COMPILER_ID:MSVC>:/W4
-              /WX
-              /permissive-
-              /w14242
-              /w14254
-              /w14263
-              /w14265
-              /w14287
-              /we4289
-              /w14296
-              /w14311
-              /w14545
-              /w14546
-              /w14547
-              /w14549
-              /w14555
-              /w14619
-              /w14640
-              /w14826
-              /w14905
-              /w14906
-              /w14928>
-              $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release,RelWithDebInfo>>:/wd4101>
-)
+if (FORK_UNION_STRICT)
+    target_compile_options(
+        fork_union
+        INTERFACE # GCC/Clang: Maximum warnings + treat warnings as errors + security hardening
+                  $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall
+                  -Wextra
+                  -Wpedantic
+                  -Werror
+                  -Wconversion
+                  -Wcast-qual
+                  -Wcast-align
+                  -Wunused
+                  -Wno-unused-parameter
+                  -Wno-unknown-pragmas
+                  -Wno-sign-conversion
+                  -Wno-unused-function
+                  -Wshadow
+                  -Wnon-virtual-dtor
+                  -Wold-style-cast
+                  -Woverloaded-virtual
+                  -Wsign-promo
+                  -Wno-null-dereference
+                  -Wdouble-promotion>
+                  $<$<AND:$<CXX_COMPILER_ID:GNU,Clang>,$<CONFIG:Release,RelWithDebInfo>>:-Wno-unused-variable>
+                  # Additional GCC-specific warnings
+                  $<$<CXX_COMPILER_ID:GNU>:-Wmisleading-indentation
+                  -Wduplicated-cond
+                  -Wduplicated-branches
+                  -Wlogical-op
+                  -Wno-null-dereference
+                  -Wuseless-cast>
+                  # Additional Clang-specific warnings
+                  $<$<CXX_COMPILER_ID:Clang>:-Wmost
+                  -Wthread-safety
+                  -Wthread-safety-negative>
+                  # MSVC: Maximum warnings + treat warnings as errors
+                  $<$<CXX_COMPILER_ID:MSVC>:/W4
+                  /WX
+                  /permissive-
+                  /w14242
+                  /w14254
+                  /w14263
+                  /w14265
+                  /w14287
+                  /we4289
+                  /w14296
+                  /w14311
+                  /w14545
+                  /w14546
+                  /w14547
+                  /w14549
+                  /w14555
+                  /w14619
+                  /w14640
+                  /w14826
+                  /w14905
+                  /w14906
+                  /w14928>
+                  $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release,RelWithDebInfo>>:/wd4101>
+    )
+endif ()
 
 # Pre-compiled libraries built from `c/lib.cpp`
 add_library(fork_union_dynamic SHARED c/lib.cpp)
@@ -241,12 +251,10 @@ install(
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fork_union
 )
 
-# On Linux, let's check if `libnuma` and `pthreads` are available.
-if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
-
+# NUMA selection logic controlled by FORK_UNION_ENABLE_NUMA
+if (UNIX AND NOT APPLE) # Linux
     # Find POSIX threads library
     find_package(Threads)
-
     # Find libNUMA
     find_library(NUMA_LIBRARY NAMES numa)
     set(NUMA_FOUND FALSE)
@@ -254,17 +262,26 @@ if (UNIX AND NOT APPLE) # "True Linux" in CMake-speak
         set(NUMA_FOUND TRUE)
         message(STATUS "libNUMA found: ${NUMA_LIBRARY}")
     else ()
-        message(STATUS "libNUMA not found – building without NUMA support")
+        message(STATUS "libNUMA not found - NUMA-dependent features unavailable")
     endif ()
 
-    # Link to PThreads, libNUMA
-    if (Threads_FOUND AND NUMA_FOUND)
-        target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY} Threads::Threads)
-        target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
-    else ()
+    if (FORK_UNION_ENABLE_NUMA STREQUAL "ON")
+        if (Threads_FOUND AND NUMA_FOUND)
+            target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY} Threads::Threads)
+            target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
+        else ()
+            message(FATAL_ERROR "FORK_UNION_ENABLE_NUMA=ON, but Threads or libnuma not found")
+        endif ()
+    elseif (FORK_UNION_ENABLE_NUMA STREQUAL "AUTO")
+        if (Threads_FOUND AND NUMA_FOUND)
+            target_link_libraries(fork_union INTERFACE ${NUMA_LIBRARY} Threads::Threads)
+            target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=1)
+        else ()
+            target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
+        endif ()
+    else () # OFF
         target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
     endif ()
-
 else () # Non-Linux platforms
     target_compile_definitions(fork_union INTERFACE FU_ENABLE_NUMA=0)
 endif ()
