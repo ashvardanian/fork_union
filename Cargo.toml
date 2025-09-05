@@ -19,7 +19,7 @@ default = ["std"]
 std = []
 
 [profile.release]
-opt-level = 3     # Corresponds to -O3
+opt-level = 2     # Corresponds to -O2
 lto = true        # Enables Link Time Optimization for further optimizations
 codegen-units = 1 # May increase compilation time but optimizes further
 rpath = false     # On some systems, setting this to false can help with optimizations

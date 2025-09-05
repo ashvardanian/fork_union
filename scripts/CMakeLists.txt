@@ -11,7 +11,7 @@ function (set_target_properties_for_fork_union_script target_name)
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
         message(STATUS "Enabling optimizations for ${target_name}")
-        target_compile_options(${target_name} PRIVATE -O3)
+        target_compile_options(${target_name} PRIVATE -O2)
     endif ()
 
     # if we're not in Release mode

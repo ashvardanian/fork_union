@@ -6,7 +6,7 @@ fn main() -> Result<(), cc::Error> {
         .file("c/lib.cpp")
         .include("include")
         .define("FU_ENABLE_NUMA", "0")
-        .opt_level(3) // Set optimization level to 2
+        .opt_level(2) // Optimize compiled C++ to -O2
         .warnings(false);
 
     // Platform-specific C++ standard flags
