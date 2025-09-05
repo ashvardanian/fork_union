@@ -8,29 +8,28 @@ fn main() -> Result<(), cc::Error> {
 
     build
         .cpp(true) // Enable C++ support
+        .std("c++17") // Use C++17 standard
         .file("c/lib.cpp")
         .include("include")
         .define("FU_ENABLE_NUMA", if enable_numa { "1" } else { "0" })
         .opt_level(2) // Optimize compiled C++ to -O2
+        .flag_if_supported("-pedantic") // Only for GCC/Clang
         .warnings(false);
 
-    // Platform-specific C++ standard flags
-    if cfg!(target_env = "msvc") {
-        build.flag("/std:c++17"); // MSVC flag for C++17
-    } else {
-        build.flag("-pedantic"); // GCC/Clang strict compliance
-        build.flag("-std=c++17"); // GCC/Clang C++17 flag
+    // Compile the C++ library first, so Cargo emits
+    // `-lstatic=fork_union` before we add dependent libs.
+    if let Err(e) = build.try_compile("fork_union") {
+        print!("cargo:warning={e}");
+        return Err(e);
     }
 
+    // Important: add dependent system libraries AFTER the static lib.
+    // For GNU ld, static libraries are resolved left-to-right, so
+    // `-lnuma -lpthread` must appear after `-lfork_union` to satisfy symbols.
     if enable_numa {
         // Link against system libraries when NUMA is enabled on Linux
         println!("cargo:rustc-link-lib=numa");
         println!("cargo:rustc-link-lib=pthread");
-    }
-
-    if let Err(e) = build.try_compile("fork_union") {
-        print!("cargo:warning={e}");
-        return Err(e);
     }
 
     println!("cargo:rerun-if-changed=c/lib.cpp");
