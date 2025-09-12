@@ -87,8 +87,10 @@
 #endif
 
 #if !defined(FU_ENABLE_NUMA)
-#if defined(__linux__) && defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
+#if defined(__linux__)
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
 #define FU_ENABLE_NUMA 1
+#endif
 #else
 #define FU_ENABLE_NUMA 0
 #endif
@@ -435,8 +437,8 @@ struct allocation_result {
     size_type bytes_per_page() const noexcept { return bytes / pages; }
 
 #if defined(__cpp_lib_allocate_at_least)
-    operator std::allocation_result<pointer_type, size_type>() const noexcept {
-        return std::allocation_result<pointer_type, size_type>(ptr, count);
+    operator auto() const noexcept {
+        return std::allocation_result{ptr, count};
     }
 #endif
 };
