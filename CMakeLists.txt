@@ -125,6 +125,11 @@ set_target_properties(
 target_link_libraries(fork_union_dynamic PUBLIC fork_union)
 target_link_libraries(fork_union_static PUBLIC fork_union)
 
+# Probe compiler support for -fcf-protection=full (depends on compiler+arch)
+include(CheckCXXCompilerFlag)
+set(HAS_CFP FALSE)
+check_cxx_compiler_flag("-fcf-protection=full" HAS_CFP)
+
 # Security hardening flags for compiled libraries
 target_compile_options(
     fork_union_dynamic
@@ -132,9 +137,9 @@ target_compile_options(
             $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
             # Control flow integrity and stack clash protection
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
+            $<$<AND:$<CXX_COMPILER_ID:GNU>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
+            $<$<CXX_COMPILER_ID:GNU>:-fstack-clash-protection>
+            $<$<AND:$<CXX_COMPILER_ID:Clang>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
             # MSVC security features
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
@@ -143,9 +148,9 @@ target_compile_options(
     fork_union_static
     PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
+            $<$<AND:$<CXX_COMPILER_ID:GNU>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
+            $<$<CXX_COMPILER_ID:GNU>:-fstack-clash-protection>
+            $<$<AND:$<CXX_COMPILER_ID:Clang>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
 )
