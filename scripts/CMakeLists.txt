@@ -36,7 +36,7 @@ endfunction ()
 
 # Test targets for C++17 & C++20
 set(TEST_SOURCES test.cpp)
-set(CXX_STANDARDS 17 20)
+set(CXX_STANDARDS 17 20 23)
 foreach (STD IN LISTS CXX_STANDARDS)
     # Derive a unique target name
     set(TGT fork_union_test_cpp${STD})
