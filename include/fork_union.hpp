@@ -86,10 +86,19 @@
 #define FU_ALLOW_UNSAFE 0
 #endif
 
+/**
+ *  We auto-enable NUMA in Linux builds with GLibC 2.30+ due to `gettid` support.
+ *  @see https://man7.org/linux/man-pages/man2/gettid.2.html
+ */
 #if !defined(FU_ENABLE_NUMA)
 #if defined(__linux__)
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
+#if __has_include(<features.h>)
+#include <features.h> // `__GLIBC__`, `__GLIBC_PREREQ`
+#endif
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 30)
 #define FU_ENABLE_NUMA 1
+#else
+#define FU_ENABLE_NUMA 0
 #endif
 #else
 #define FU_ENABLE_NUMA 0
