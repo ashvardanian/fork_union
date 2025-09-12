@@ -27,8 +27,12 @@ fn main() -> Result<(), cc::Error> {
     // For GNU ld, static libraries are resolved left-to-right, so
     // `-lnuma -lpthread` must appear after `-lfork_union` to satisfy symbols.
     if enable_numa {
-        // Link against system libraries when NUMA is enabled on Linux
+        // Link against `libnuma` when NUMA is enabled on Linux
         println!("cargo:rustc-link-lib=numa");
+    }
+
+    // Always link `pthreads` on Linux since the library uses std::thread internally
+    if target_os == "linux" {
         println!("cargo:rustc-link-lib=pthread");
     }
 
