@@ -146,6 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         llvm: [16, 17, 18, 19, 20]
+        config: [Debug, Release, RelWithDebInfo]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -157,18 +158,17 @@ jobs:
 
       - name: Configure (CMake)
         run: |
-          comp=$(brew --prefix llvm@${{ matrix.llvm }})/bin/clang++
-          cmake -S . -B build_artifacts -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=$comp
+          cmake -S . -B build_artifacts -D CMAKE_BUILD_TYPE=${{ matrix.config }} -D CMAKE_CXX_COMPILER=$(brew --prefix llvm@${{ matrix.llvm }})/bin/clang++
 
       - name: Build
-        run: cmake --build build_artifacts --config Debug --parallel
+        run: cmake --build build_artifacts --config ${{ matrix.config }} --parallel
 
       - name: Run C++ tests
         run: |
           set -euxo pipefail
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
-
+          build_artifacts/fork_union_test_cpp23
   test_windows:
     name: Windows
     runs-on: windows-2022
@@ -198,3 +198,29 @@ jobs:
         run: cargo build
       - name: Test Rust
         run: cargo test
+
+  test_windows_msvc_matrix:
+    name: Windows MSVC Versions
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        toolset: [v143, v142] # VS 2022 and VS 2019
+        config: [Debug, Release, RelWithDebInfo]
+        arch: [x64, x86]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build C/C++ with MSVC ${{ matrix.toolset }} (${{ matrix.arch }}, ${{ matrix.config }})
+        run: |
+          choco install cmake
+          cmake -B build_artifacts -T ${{ matrix.toolset }} -A ${{ matrix.arch }} -D CMAKE_BUILD_TYPE=${{ matrix.config }}
+          cmake --build build_artifacts --config ${{ matrix.config }}
+      - name: List build artifacts
+        run: Get-ChildItem -Recurse .\build_artifacts
+      - name: Test C++
+        run: |
+          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp17.exe
+          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp20.exe
+          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp23.exe
