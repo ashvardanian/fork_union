@@ -63,6 +63,7 @@ jobs:
         run: |
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp23
 
       - name: Set up Rust
         run: |
@@ -125,6 +126,7 @@ jobs:
         run: |
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp23
 
       - name: Set up Rust
         run: |
@@ -154,6 +156,7 @@ jobs:
         run: |
           .\build_artifacts\fork_union_test_cpp17.exe
           .\build_artifacts\fork_union_test_cpp20.exe
+          .\build_artifacts\fork_union_test_cpp23.exe
 
       - name: Set up Rust
         run: |
