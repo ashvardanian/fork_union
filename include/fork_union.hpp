@@ -434,10 +434,24 @@ struct allocation_result {
 
     size_type bytes_per_page() const noexcept { return bytes / pages; }
 
+    /**
+     *  The standard says, that `std::allocation_result` must have 2 template arguments:
+     *  pointer type and size type. Clang until version 19 disagrees and results in a
+     *  compilation error, so we use some ugly SFINAE to detect which form is available.
+     *
+     *  `_LIBCPP_VERSION` is encoded  as (MAJOR * 10000 + MINOR * 100 + PATCH).
+     *  @see https://github.com/llvm/llvm-project/blob/main/libcxx/include/__config
+     */
 #if defined(__cpp_lib_allocate_at_least)
+#if defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 190000
+    operator std::allocation_result<pointer_type>() const noexcept {
+        return std::allocation_result<pointer_type> {ptr, static_cast<std::size_t>(count)};
+    }
+#else
     operator std::allocation_result<pointer_type, size_type>() const noexcept {
         return std::allocation_result<pointer_type, size_type>(ptr, count);
     }
+#endif
 #endif
 };
 
