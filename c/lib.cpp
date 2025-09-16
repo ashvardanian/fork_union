@@ -472,10 +472,15 @@ fu_pool_t *fu_pool_new(FU_MAYBE_UNUSED_ char const *name) {
     return reinterpret_cast<fu_pool_t *>(opaque);
 }
 
+/** @brief Safely cast `fu_pool_t*` to `opaque_pool_t*` avoiding alignment violation warnings. */
+inline opaque_pool_t *upcast_pool(fu_pool_t *pool) noexcept {
+    return std::launder(reinterpret_cast<opaque_pool_t *>(pool));
+}
+
 void fu_pool_delete(fu_pool_t *pool) {
     assert(pool != nullptr);
 
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit([](auto &variant) { variant.terminate(); }, opaque->variants);
 
     // Call the object's destructor and deallocate the memory
@@ -486,44 +491,44 @@ void fu_pool_delete(fu_pool_t *pool) {
 fu_bool_t fu_pool_spawn(fu_pool_t *pool, size_t threads, fu_caller_exclusivity_t c_exclusivity) {
     assert(pool != nullptr);
     assert(c_exclusivity == fu_caller_inclusive_k || c_exclusivity == fu_caller_exclusive_k);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     auto exclusivity = c_exclusivity == fu_caller_inclusive_k ? fu::caller_inclusive_k : fu::caller_exclusive_k;
     return visit([=](auto &variant) { return variant.try_spawn(threads, exclusivity); }, opaque->variants);
 }
 
 void fu_pool_sleep(fu_pool_t *pool, size_t micros) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit([=](auto &variant) { variant.sleep(micros); }, opaque->variants);
 }
 
 void fu_pool_terminate(fu_pool_t *pool) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit([](auto &variant) { variant.terminate(); }, opaque->variants);
 }
 
 size_t fu_pool_count_colocations(fu_pool_t *pool) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     return visit([](auto &variant) { return variant.colocations_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads(fu_pool_t *pool) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     return visit([](auto &variant) { return variant.threads_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     return visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);
 }
 
 size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     return visit([=](auto &variant) { return variant.thread_local_index(global_thread_index, colocation_index); },
                  opaque->variants);
 }
@@ -534,7 +539,7 @@ size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, siz
 
 void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit(
         [&](auto &variant) {
             variant.for_threads([=](fu::colocated_thread_t pinned) noexcept { //
@@ -546,7 +551,7 @@ void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_c
 
 void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit(
         [&](auto &variant) {
             variant.for_n(n, [=](fu::colocated_prong_t prong) noexcept { //
@@ -558,7 +563,7 @@ void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambd
 
 void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit(
         [&](auto &variant) {
             variant.for_n_dynamic(n, [=](fu::colocated_prong_t prong) noexcept { //
@@ -570,7 +575,7 @@ void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, 
 
 void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     visit(
         [&](auto &variant) {
             variant.for_slices(n, [=](fu::colocated_prong_t prong, std::size_t count) noexcept { //
@@ -586,7 +591,7 @@ void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_
 
 void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     opaque->current_context = context;
     opaque->current_callback = callback;
     visit([&](auto &variant) { variant.unsafe_for_threads(*opaque); }, opaque->variants);
@@ -594,7 +599,7 @@ void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_l
 
 void fu_pool_unsafe_join(fu_pool_t *pool) {
     assert(pool != nullptr);
-    opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
+    opaque_pool_t *opaque = upcast_pool(pool);
     assert(opaque->current_context != nullptr);
     visit([](auto &variant) { variant.unsafe_join(); }, opaque->variants);
     opaque->current_context = nullptr;
