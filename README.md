@@ -1,25 +1,28 @@
 # Fork Union 🍴
 
-"Fork Union" is the low(est?)-latency [OpenMP](https://en.wikipedia.org/wiki/OpenMP)-style [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access)-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#alignment--false-sharing) of CPU cache-lines on the hot path 🍴
+Fork Union is arguably the lowest-latency OpenMP-style NUMA-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#alignment--false-sharing) of CPU cache-lines on the hot path 🍴
 
-[![Ubuntu GCC](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20GCC)](https://github.com/ashvardanian/fork_union/actions)
-[![Ubuntu Clang](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20Clang)](https://github.com/ashvardanian/fork_union/actions)
-[![macOS](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=macOS)](https://github.com/ashvardanian/fork_union/actions)
-[![Windows](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Windows)](https://github.com/ashvardanian/fork_union/actions)
+[![Ubuntu GCC](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20GCC&job=test_ubuntu_gcc)](https://github.com/ashvardanian/fork_union/actions)
+[![Ubuntu Clang](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20Clang&job=test_ubuntu_clang)](https://github.com/ashvardanian/fork_union/actions)
+[![macOS](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=macOS&job=test_macos)](https://github.com/ashvardanian/fork_union/actions)
+[![Windows](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Windows&job=test_windows)](https://github.com/ashvardanian/fork_union/actions)
+[![32-bit x86](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=32-bit%20x86&job=test_i386)](https://github.com/ashvardanian/fork_union/actions)
+[![32-bit ARM](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=32-bit%20ARM&job=test_armhf)](https://github.com/ashvardanian/fork_union/actions)
+[![Big-endian IBM](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Big-endian%20IBM&job=test_s390x)](https://github.com/ashvardanian/fork_union/actions)
 
 ## Motivation
 
 Most "thread-pools" are not, in fact, thread-pools, but rather "task-queues" that are designed to synchronize a concurrent dynamically growing list of heap-allocated globally accessible shared objects.
 In C++ terms, think of it as a `std::queue<std::function<void()>>` protected by a `std::mutex`, where each thread waits for the next task to be available and then executes it on some random core chosen by the OS scheduler.
 All of that is slow... and true across C++, C, and Rust projects.
-Short of OpenMP, practically every other solution has high dispatch latency and noticeable memory overhead.
+Short of [OpenMP](https://en.wikipedia.org/wiki/OpenMP), practically every other solution has high dispatch latency and noticeable memory overhead.
 OpenMP, however, is not ideal for fine-grained parallelism and is less portable than the C++ and Rust standard libraries.
 
 [![`fork_union` banner](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/fork_union.jpg?raw=true)](https://github.com/ashvardanian/fork_union)
 
 This is where __`fork_union`__ comes in.
 It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
-It supports pinning threads to specific NUMA nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
+It supports pinning threads to specific [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access) nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
 
 ## Basic Usage
 

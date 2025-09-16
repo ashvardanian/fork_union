@@ -32,12 +32,8 @@
 *.app
 
 # Build directories
-build/
-build_test/
-build_debug/
-build_release/
-build_artifacts/
-Testing/
+/build*/
+/Testing/
 
 # Rust build artifacts
 Cargo.lock
