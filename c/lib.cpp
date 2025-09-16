@@ -7,48 +7,213 @@
 #include <fork_union.h>   // C type aliases
 #include <fork_union.hpp> // C++ core implementation
 
-#include <variant> // `std::variant`
-#include <utility> // `std::in_place_type_t`
+#include <utility>     // `std::in_place_type_t`
+#include <algorithm>   // `std::max`
+#include <new>         // placement `new` operator
+#include <cstdint>     // `std::uint8_t`
+#include <type_traits> // `std::aligned_storage`
 
 namespace fu = ashvardanian::fork_union;
 
 using thread_allocator_t = std::allocator<std::thread>;
 
-using pool_variants_t = std::variant< //
+/**
+ *  @brief Custom variant implementation to avoid MSVC `std::variant` alignment issues.
+ *
+ *  MSVC cannot handle alignas > 64 when objects are passed by value in `std::variant`.
+ *  This custom implementation uses a tagged union with manual type management.
+ *  @see https://github.com/ashvardanian/fork_union/issues/26
+ */
+struct pool_variants_t {
 
+    // ? Helper to compute max size and alignment of types
+    template <typename... types_>
+    struct max_size_align {
+        static constexpr std::size_t size_k = std::max({sizeof(types_)...});
+        static constexpr std::size_t alignment_k = std::max({alignof(types_)...});
+    };
+
+    using pool_traits_t = max_size_align< //
 #if FU_WITH_ASM_YIELDS_
 #if FU_DETECT_ARCH_X86_64_
-    fu::basic_pool<thread_allocator_t, fu::x86_pause_t>,  //
-    fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>, //
+        fu::basic_pool<thread_allocator_t, fu::x86_pause_t>,  //
+        fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>, //
 #endif
 #if FU_DETECT_ARCH_ARM64_
-    fu::basic_pool<thread_allocator_t, fu::arm64_yield_t>, //
-    fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t>,  //
+        fu::basic_pool<thread_allocator_t, fu::arm64_yield_t>, //
+        fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t>,  //
 #endif
 #if FU_DETECT_ARCH_RISC5_
-    fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>, //
+        fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>, //
 #endif
 #endif // FU_WITH_ASM_YIELDS_
 
 #if FU_ENABLE_NUMA
-    fu::linux_distributed_pool<fu::standard_yield_t>, //
+        fu::linux_distributed_pool<fu::standard_yield_t>, //
 #if FU_WITH_ASM_YIELDS_
 #if FU_DETECT_ARCH_X86_64_
-    fu::linux_distributed_pool<fu::x86_pause_t>,  //
-    fu::linux_distributed_pool<fu::x86_tpause_t>, //
+        fu::linux_distributed_pool<fu::x86_pause_t>,  //
+        fu::linux_distributed_pool<fu::x86_tpause_t>, //
 #endif
 #if FU_DETECT_ARCH_ARM64_
-    fu::linux_distributed_pool<fu::arm64_yield_t>, //
-    fu::linux_distributed_pool<fu::arm64_wfet_t>,  //
+        fu::linux_distributed_pool<fu::arm64_yield_t>, //
+        fu::linux_distributed_pool<fu::arm64_wfet_t>,  //
 #endif
 #if FU_DETECT_ARCH_RISC5_
-    fu::linux_distributed_pool<fu::risc5_pause_t>, //
+        fu::linux_distributed_pool<fu::risc5_pause_t>, //
 #endif
 #endif // FU_WITH_ASM_YIELDS_
 #endif // FU_ENABLE_NUMA
 
-    fu::basic_pool<thread_allocator_t, fu::standard_yield_t> //
-    >;
+        fu::basic_pool<thread_allocator_t, fu::standard_yield_t> //
+        >;
+
+    alignas(pool_traits_t::alignment_k) std::uint8_t storage_[pool_traits_t::size_k];
+    fu::capabilities_t capabilities_ {fu::capabilities_unknown_k}; // ? Which pool type is stored
+
+    pool_variants_t() = default;
+    ~pool_variants_t() = default;
+
+    template <typename pool_type_, typename... args_types_>
+    pool_variants_t(std::in_place_type_t<pool_type_>, args_types_ &&...args) noexcept {
+        construct<pool_type_>(std::forward<args_types_>(args)...);
+    }
+
+    template <typename pool_type_, typename... args_types_>
+    void construct(args_types_ &&...args) noexcept {
+        new (storage_) pool_type_(std::forward<args_types_>(args)...);
+
+        // ? Set capabilities based on pool type
+        capabilities_ = fu::capabilities_unknown_k;
+
+        if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::standard_yield_t>>) {
+            capabilities_ = fu::capabilities_unknown_k;
+        }
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
+        else if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::x86_pause_t>>) {
+            capabilities_ = fu::capability_x86_pause_k;
+        }
+        else if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::x86_tpause_t>>) {
+            capabilities_ = fu::capability_x86_tpause_k;
+        }
+#endif
+#if FU_DETECT_ARCH_ARM64_
+        else if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::arm64_yield_t>>) {
+            capabilities_ = fu::capability_arm64_yield_k;
+        }
+        else if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t>>) {
+            capabilities_ = fu::capability_arm64_wfet_k;
+        }
+#endif
+#if FU_DETECT_ARCH_RISC5_
+        else if constexpr (std::is_same_v<pool_type_, fu::basic_pool<thread_allocator_t, fu::risc5_pause_t>>) {
+            capabilities_ = fu::capability_risc5_pause_k;
+        }
+#endif
+#endif
+#if FU_ENABLE_NUMA
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::standard_yield_t>>) {
+            capabilities_ = fu::capability_numa_aware_k;
+        }
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::x86_pause_t>>) {
+            capabilities_ = fu::capability_x86_pause_k | fu::capability_numa_aware_k;
+        }
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::x86_tpause_t>>) {
+            capabilities_ = fu::capability_x86_tpause_k | fu::capability_numa_aware_k;
+        }
+#endif
+#if FU_DETECT_ARCH_ARM64_
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::arm64_yield_t>>) {
+            capabilities_ = fu::capability_arm64_yield_k | fu::capability_numa_aware_k;
+        }
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::arm64_wfet_t>>) {
+            capabilities_ = fu::capability_arm64_wfet_k | fu::capability_numa_aware_k;
+        }
+#endif
+#if FU_DETECT_ARCH_RISC5_
+        else if constexpr (std::is_same_v<pool_type_, fu::linux_distributed_pool<fu::risc5_pause_t>>) {
+            capabilities_ = fu::capability_risc5_pause_k | fu::capability_numa_aware_k;
+        }
+#endif
+#endif
+#endif
+    }
+};
+
+// ? Custom visit function to replace std::visit
+template <typename visitor_type_>
+auto visit(visitor_type_ &&visitor, pool_variants_t &variants) {
+    if (!(variants.capabilities_ & fu::capability_numa_aware_k)) {
+        // ? Basic pools
+        if (variants.capabilities_ == fu::capabilities_unknown_k) {
+            return visitor(
+                *reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::standard_yield_t> *>(variants.storage_));
+        }
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
+        else if (variants.capabilities_ == fu::capability_x86_pause_k) {
+            return visitor(*reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::x86_pause_t> *>(variants.storage_));
+        }
+        else if (variants.capabilities_ == fu::capability_x86_tpause_k) {
+            return visitor(
+                *reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::x86_tpause_t> *>(variants.storage_));
+        }
+#endif
+#if FU_DETECT_ARCH_ARM64_
+        else if (variants.capabilities_ == fu::capability_arm64_yield_k) {
+            return visitor(
+                *reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::arm64_yield_t> *>(variants.storage_));
+        }
+        else if (variants.capabilities_ == fu::capability_arm64_wfet_k) {
+            return visitor(
+                *reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::arm64_wfet_t> *>(variants.storage_));
+        }
+#endif
+#if FU_DETECT_ARCH_RISC5_
+        else if (variants.capabilities_ == fu::capability_risc5_pause_k) {
+            return visitor(
+                *reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::risc5_pause_t> *>(variants.storage_));
+        }
+#endif
+#endif
+    }
+#if FU_ENABLE_NUMA
+    else {
+        // ? NUMA-aware pools
+        if (variants.capabilities_ == fu::capability_numa_aware_k) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::standard_yield_t> *>(variants.storage_));
+        }
+#if FU_WITH_ASM_YIELDS_
+#if FU_DETECT_ARCH_X86_64_
+        else if (variants.capabilities_ == (fu::capability_x86_pause_k | fu::capability_numa_aware_k)) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::x86_pause_t> *>(variants.storage_));
+        }
+        else if (variants.capabilities_ == (fu::capability_x86_tpause_k | fu::capability_numa_aware_k)) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::x86_tpause_t> *>(variants.storage_));
+        }
+#endif
+#if FU_DETECT_ARCH_ARM64_
+        else if (variants.capabilities_ == (fu::capability_arm64_yield_k | fu::capability_numa_aware_k)) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::arm64_yield_t> *>(variants.storage_));
+        }
+        else if (variants.capabilities_ == (fu::capability_arm64_wfet_k | fu::capability_numa_aware_k)) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::arm64_wfet_t> *>(variants.storage_));
+        }
+#endif
+#if FU_DETECT_ARCH_RISC5_
+        else if (variants.capabilities_ == (fu::capability_risc5_pause_k | fu::capability_numa_aware_k)) {
+            return visitor(*reinterpret_cast<fu::linux_distributed_pool<fu::risc5_pause_t> *>(variants.storage_));
+        }
+#endif
+#endif
+    }
+#endif
+    // ? Default fallback
+    return visitor(*reinterpret_cast<fu::basic_pool<thread_allocator_t, fu::standard_yield_t> *>(variants.storage_));
+}
 
 struct opaque_pool_t {
     pool_variants_t variants;
@@ -311,7 +476,7 @@ void fu_pool_delete(fu_pool_t *pool) {
     assert(pool != nullptr);
 
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit([](auto &variant) { variant.terminate(); }, opaque->variants);
+    visit([](auto &variant) { variant.terminate(); }, opaque->variants);
 
     // Call the object's destructor and deallocate the memory
     opaque->~opaque_pool_t();
@@ -323,44 +488,44 @@ fu_bool_t fu_pool_spawn(fu_pool_t *pool, size_t threads, fu_caller_exclusivity_t
     assert(c_exclusivity == fu_caller_inclusive_k || c_exclusivity == fu_caller_exclusive_k);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     auto exclusivity = c_exclusivity == fu_caller_inclusive_k ? fu::caller_inclusive_k : fu::caller_exclusive_k;
-    return std::visit([=](auto &variant) { return variant.try_spawn(threads, exclusivity); }, opaque->variants);
+    return visit([=](auto &variant) { return variant.try_spawn(threads, exclusivity); }, opaque->variants);
 }
 
 void fu_pool_sleep(fu_pool_t *pool, size_t micros) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit([=](auto &variant) { variant.sleep(micros); }, opaque->variants);
+    visit([=](auto &variant) { variant.sleep(micros); }, opaque->variants);
 }
 
 void fu_pool_terminate(fu_pool_t *pool) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit([](auto &variant) { variant.terminate(); }, opaque->variants);
+    visit([](auto &variant) { variant.terminate(); }, opaque->variants);
 }
 
 size_t fu_pool_count_colocations(fu_pool_t *pool) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    return std::visit([](auto &variant) { return variant.colocations_count(); }, opaque->variants);
+    return visit([](auto &variant) { return variant.colocations_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads(fu_pool_t *pool) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    return std::visit([](auto &variant) { return variant.threads_count(); }, opaque->variants);
+    return visit([](auto &variant) { return variant.threads_count(); }, opaque->variants);
 }
 
 size_t fu_pool_count_threads_in(fu_pool_t *pool, size_t colocation_index) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    return std::visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);
+    return visit([=](auto &variant) { return variant.threads_count(colocation_index); }, opaque->variants);
 }
 
 size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, size_t colocation_index) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    return std::visit([=](auto &variant) { return variant.thread_local_index(global_thread_index, colocation_index); },
-                      opaque->variants);
+    return visit([=](auto &variant) { return variant.thread_local_index(global_thread_index, colocation_index); },
+                 opaque->variants);
 }
 
 #pragma endregion - Lifetime
@@ -370,7 +535,7 @@ size_t fu_pool_locate_thread_in(fu_pool_t *pool, size_t global_thread_index, siz
 void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit(
+    visit(
         [&](auto &variant) {
             variant.for_threads([=](fu::colocated_thread_t pinned) noexcept { //
                 callback(context, pinned.thread, pinned.colocation);
@@ -382,7 +547,7 @@ void fu_pool_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_lambda_c
 void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit(
+    visit(
         [&](auto &variant) {
             variant.for_n(n, [=](fu::colocated_prong_t prong) noexcept { //
                 callback(context, prong.task, prong.thread, prong.colocation);
@@ -394,7 +559,7 @@ void fu_pool_for_n(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambd
 void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit(
+    visit(
         [&](auto &variant) {
             variant.for_n_dynamic(n, [=](fu::colocated_prong_t prong) noexcept { //
                 callback(context, prong.task, prong.thread, prong.colocation);
@@ -406,7 +571,7 @@ void fu_pool_for_n_dynamic(fu_pool_t *pool, size_t n, fu_for_prongs_t callback, 
 void fu_pool_for_slices(fu_pool_t *pool, size_t n, fu_for_slices_t callback, fu_lambda_context_t context) {
     assert(pool != nullptr && callback != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
-    std::visit(
+    visit(
         [&](auto &variant) {
             variant.for_slices(n, [=](fu::colocated_prong_t prong, std::size_t count) noexcept { //
                 callback(context, prong.task, count, prong.thread, prong.colocation);
@@ -424,14 +589,14 @@ void fu_pool_unsafe_for_threads(fu_pool_t *pool, fu_for_threads_t callback, fu_l
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     opaque->current_context = context;
     opaque->current_callback = callback;
-    std::visit([&](auto &variant) { variant.unsafe_for_threads(*opaque); }, opaque->variants);
+    visit([&](auto &variant) { variant.unsafe_for_threads(*opaque); }, opaque->variants);
 }
 
 void fu_pool_unsafe_join(fu_pool_t *pool) {
     assert(pool != nullptr);
     opaque_pool_t *opaque = reinterpret_cast<opaque_pool_t *>(pool);
     assert(opaque->current_context != nullptr);
-    std::visit([](auto &variant) { variant.unsafe_join(); }, opaque->variants);
+    visit([](auto &variant) { variant.unsafe_join(); }, opaque->variants);
     opaque->current_context = nullptr;
     opaque->current_callback = nullptr;
 }
