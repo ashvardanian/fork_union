@@ -86,9 +86,20 @@
 #define FU_ALLOW_UNSAFE 0
 #endif
 
+/**
+ *  We auto-enable NUMA in Linux builds with GLibC 2.30+ due to `gettid` support.
+ *  @see https://man7.org/linux/man-pages/man2/gettid.2.html
+ */
 #if !defined(FU_ENABLE_NUMA)
-#if defined(__linux__) && defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
+#if defined(__linux__)
+#if __has_include(<features.h>)
+#include <features.h> // `__GLIBC__`, `__GLIBC_PREREQ`
+#endif
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 30)
 #define FU_ENABLE_NUMA 1
+#else
+#define FU_ENABLE_NUMA 0
+#endif
 #else
 #define FU_ENABLE_NUMA 0
 #endif
@@ -434,10 +445,24 @@ struct allocation_result {
 
     size_type bytes_per_page() const noexcept { return bytes / pages; }
 
+    /**
+     *  The standard says, that `std::allocation_result` must have 2 template arguments:
+     *  pointer type and size type. Clang until version 19 disagrees and results in a
+     *  compilation error, so we use some ugly SFINAE to detect which form is available.
+     *
+     *  `_LIBCPP_VERSION` is encoded  as (MAJOR * 10000 + MINOR * 100 + PATCH).
+     *  @see https://github.com/llvm/llvm-project/blob/main/libcxx/include/__config
+     */
 #if defined(__cpp_lib_allocate_at_least)
+#if defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 190000
+    operator std::allocation_result<pointer_type>() const noexcept {
+        return std::allocation_result<pointer_type> {ptr, static_cast<std::size_t>(count)};
+    }
+#else
     operator std::allocation_result<pointer_type, size_type>() const noexcept {
         return std::allocation_result<pointer_type, size_type>(ptr, count);
     }
+#endif
 #endif
 };
 

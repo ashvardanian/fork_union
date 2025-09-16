@@ -18,12 +18,14 @@ project(
     LANGUAGES CXX
 )
 
-# Options
-# - Control strict interface warnings for consumers
+# Control strict interface warnings for consumers
 option(FORK_UNION_STRICT "Propagate strict warnings (including -Werror) to consumers" OFF)
 
-# - Control NUMA enablement: AUTO, ON, OFF
-set(FORK_UNION_ENABLE_NUMA "AUTO" CACHE STRING "NUMA support mode: AUTO, ON, or OFF")
+# Control NUMA enablement: AUTO, ON, OFF
+set(FORK_UNION_ENABLE_NUMA
+    "AUTO"
+    CACHE STRING "NUMA support mode: AUTO, ON, or OFF"
+)
 set_property(CACHE FORK_UNION_ENABLE_NUMA PROPERTY STRINGS "AUTO;ON;OFF")
 
 # Enforce C++17 as the minimum standard for the project.
@@ -125,6 +127,11 @@ set_target_properties(
 target_link_libraries(fork_union_dynamic PUBLIC fork_union)
 target_link_libraries(fork_union_static PUBLIC fork_union)
 
+# Probe compiler support for -fcf-protection=full (depends on compiler+arch)
+include(CheckCXXCompilerFlag)
+set(HAS_CFP FALSE)
+check_cxx_compiler_flag("-fcf-protection=full" HAS_CFP)
+
 # Security hardening flags for compiled libraries
 target_compile_options(
     fork_union_dynamic
@@ -132,9 +139,9 @@ target_compile_options(
             $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
             # Control flow integrity and stack clash protection
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
+            $<$<AND:$<CXX_COMPILER_ID:GNU>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
+            $<$<CXX_COMPILER_ID:GNU>:-fstack-clash-protection>
+            $<$<AND:$<CXX_COMPILER_ID:Clang>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
             # MSVC security features
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
@@ -143,9 +150,9 @@ target_compile_options(
     fork_union_static
     PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
+            $<$<AND:$<CXX_COMPILER_ID:GNU>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
+            $<$<CXX_COMPILER_ID:GNU>:-fstack-clash-protection>
+            $<$<AND:$<CXX_COMPILER_ID:Clang>,$<BOOL:${HAS_CFP}>>:-fcf-protection=full>
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
 )
@@ -166,13 +173,26 @@ target_link_options(
     $<$<CXX_COMPILER_ID:MSVC>:/guard:cf>
 )
 
-# Set the output directory for all executables - on Windows requires more boilerplate:
+# Set the output directory for all executables and libraries - on Windows requires more boilerplate:
 # https://stackoverflow.com/a/25328001
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
+
+# Also set library output directories to avoid nested config directories
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
+
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
 
 # Static analysis tools
 find_program(CPPCHECK_EXECUTABLE cppcheck)
