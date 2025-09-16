@@ -37,6 +37,7 @@
 #include <thread> // `std::thread::hardware_concurrency`
 #include <span>   // `std::span`
 #include <bit>    // `std::bit_cast`
+#include <limits> // `std::numeric_limits`
 
 // Clang generally defines `_OPENMP` when OpenMP, but compiling it is
 /// tricky and the header may not be available.
@@ -280,10 +281,15 @@ int main(void) {
     auto const threads_str = safe_getenv("NBODY_THREADS");
 
     // Parse env vars and validate
-    std::size_t n = std::strtoull(n_str ? n_str : "0", nullptr, 10);
-    std::size_t const iterations = std::strtoull(iterations_str ? iterations_str : "1000", nullptr, 10);
+    auto n_ull = std::strtoull(n_str ? n_str : "0", nullptr, 10);
+    auto iterations_ull = std::strtoull(iterations_str ? iterations_str : "1000", nullptr, 10);
+    auto threads_ull = std::strtoull(threads_str ? threads_str : "0", nullptr, 10);
+    auto const size_max = std::numeric_limits<std::size_t>::max();
+
+    std::size_t n = (n_ull > size_max) ? size_max : static_cast<std::size_t>(n_ull);
+    std::size_t const iterations = (iterations_ull > size_max) ? size_max : static_cast<std::size_t>(iterations_ull);
+    std::size_t threads = (threads_ull > size_max) ? size_max : static_cast<std::size_t>(threads_ull);
     std::string_view const backend = backend_str ? backend_str : "fork_union_static";
-    std::size_t threads = std::strtoull(threads_str ? threads_str : "0", nullptr, 10);
     if (threads == 0) threads = std::thread::hardware_concurrency();
     if (n == 0) n = threads;
 
