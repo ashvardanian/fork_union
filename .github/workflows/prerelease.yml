@@ -219,7 +219,7 @@ jobs:
       - name: Build C/C++ with MSVC ${{ matrix.toolset }} (${{ matrix.arch }}, ${{ matrix.config }})
         run: |
           choco install cmake
-          cmake -B build_artifacts -T ${{ matrix.toolset }} -A ${{ matrix.arch }} -D CMAKE_BUILD_TYPE=${{ matrix.config }}
+          cmake -B build_artifacts -G "Visual Studio 17 2022" -T ${{ matrix.toolset }} -A ${{ matrix.arch }}
           cmake --build build_artifacts --config ${{ matrix.config }}
       - name: List build artifacts
         run: Get-ChildItem -Recurse .\build_artifacts
