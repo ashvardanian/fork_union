@@ -57,8 +57,8 @@ To integrate into your Rust project, add the following lines to Cargo.toml:
 
 ```toml
 [dependencies]
-fork_union = "2.2.7"                                    # default
-fork_union = { version = "2.2.7", features = ["numa"] } # with NUMA support on Linux
+fork_union = "2.2.8"                                    # default
+fork_union = { version = "2.2.8", features = ["numa"] } # with NUMA support on Linux
 ```
 
 Or for the preview development version:
@@ -131,7 +131,7 @@ Alternatively, using CMake:
 FetchContent_Declare(
     fork_union
     GIT_REPOSITORY https://github.com/ashvardanian/fork_union
-    GIT_TAG v2.2.7
+    GIT_TAG v2.2.8
 )
 FetchContent_MakeAvailable(fork_union)
 target_link_libraries(your_target PRIVATE fork_union::fork_union)
