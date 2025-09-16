@@ -61,6 +61,7 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
+          set -euxo pipefail
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
           build_artifacts/fork_union_test_cpp23
@@ -95,6 +96,7 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
+          set -euxo pipefail
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
           build_artifacts/fork_union_test_cpp23
@@ -125,6 +127,7 @@ jobs:
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++
         run: |
+          set -euxo pipefail
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
           build_artifacts/fork_union_test_cpp23
@@ -146,7 +149,7 @@ jobs:
       fail-fast: false
       matrix:
         llvm: [16, 17, 18, 19, 20]
-        config: [Debug, Release, RelWithDebInfo]
+        config: [Debug, Release, RelWithDebInfo, MinSizeRel]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -185,6 +188,7 @@ jobs:
         run: Get-ChildItem -Recurse .\build_artifacts
       - name: Test C++
         run: |
+          $ErrorActionPreference = "Stop"
           .\build_artifacts\fork_union_test_cpp17.exe
           .\build_artifacts\fork_union_test_cpp20.exe
           .\build_artifacts\fork_union_test_cpp23.exe
@@ -206,7 +210,7 @@ jobs:
       fail-fast: false
       matrix:
         toolset: [v143, v142] # VS 2022 and VS 2019
-        config: [Debug, Release, RelWithDebInfo]
+        config: [Debug, Release, RelWithDebInfo, MinSizeRel]
         arch: [x64, x86]
     steps:
       - name: Checkout
@@ -221,6 +225,7 @@ jobs:
         run: Get-ChildItem -Recurse .\build_artifacts
       - name: Test C++
         run: |
-          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp17.exe
-          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp20.exe
-          .\build_artifacts\${{ matrix.config }}\fork_union_test_cpp23.exe
+          $ErrorActionPreference = "Stop"
+          .\build_artifacts\fork_union_test_cpp17.exe
+          .\build_artifacts\fork_union_test_cpp20.exe
+          .\build_artifacts\fork_union_test_cpp23.exe
