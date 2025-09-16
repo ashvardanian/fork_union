@@ -480,6 +480,15 @@ cmake --build build_debug --config Debug
 build_debug/fork_union_test_cpp20
 ```
 
+Or on macOS with Apple Clang:
+
+```bash
+brew install llvm@20
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=$(brew --prefix llvm@20)/bin/clang++
+cmake --build build_debug --config Debug
+build_debug/fork_union_test_cpp20
+```
+
 For Rust, use the following command:
 
 ```bash

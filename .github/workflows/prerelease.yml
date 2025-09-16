@@ -97,6 +97,7 @@ jobs:
         run: |
           build_artifacts/fork_union_test_cpp17
           build_artifacts/fork_union_test_cpp20
+          build_artifacts/fork_union_test_cpp23
 
       - name: Set up Rust
         run: |
@@ -109,7 +110,7 @@ jobs:
         run: cargo test
 
   test_macos:
-    name: MacOS
+    name: macOS
     runs-on: macos-14
 
     steps:
@@ -137,6 +138,36 @@ jobs:
         run: cargo build
       - name: Test Rust
         run: cargo test
+
+  test_macos_llvm_versions:
+    name: macOS LLVM Versions
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: [16, 17, 18, 19, 20]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install LLVM ${{ matrix.llvm }}
+        run: |
+          brew update
+          brew install llvm@${{ matrix.llvm }}
+
+      - name: Configure (CMake)
+        run: |
+          comp=$(brew --prefix llvm@${{ matrix.llvm }})/bin/clang++
+          cmake -S . -B build_artifacts -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=$comp
+
+      - name: Build
+        run: cmake --build build_artifacts --config Debug --parallel
+
+      - name: Run C++ tests
+        run: |
+          set -euxo pipefail
+          build_artifacts/fork_union_test_cpp17
+          build_artifacts/fork_union_test_cpp20
 
   test_windows:
     name: Windows
