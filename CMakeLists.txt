@@ -18,12 +18,14 @@ project(
     LANGUAGES CXX
 )
 
-# Options
-# - Control strict interface warnings for consumers
+# Control strict interface warnings for consumers
 option(FORK_UNION_STRICT "Propagate strict warnings (including -Werror) to consumers" OFF)
 
-# - Control NUMA enablement: AUTO, ON, OFF
-set(FORK_UNION_ENABLE_NUMA "AUTO" CACHE STRING "NUMA support mode: AUTO, ON, or OFF")
+# Control NUMA enablement: AUTO, ON, OFF
+set(FORK_UNION_ENABLE_NUMA
+    "AUTO"
+    CACHE STRING "NUMA support mode: AUTO, ON, or OFF"
+)
 set_property(CACHE FORK_UNION_ENABLE_NUMA PROPERTY STRINGS "AUTO;ON;OFF")
 
 # Enforce C++17 as the minimum standard for the project.
