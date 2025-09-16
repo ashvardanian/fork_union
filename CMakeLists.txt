@@ -121,10 +121,6 @@ target_compile_options(
     PRIVATE # Stack protection and buffer overflow detection
             $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
-            # Control flow integrity and stack clash protection
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
             # MSVC security features
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
@@ -133,9 +129,6 @@ target_compile_options(
     fork_union_static
     PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-fstack-protector-strong
             -D_FORTIFY_SOURCE=2>
-            $<$<CXX_COMPILER_ID:GNU>:-fcf-protection=full
-            -fstack-clash-protection>
-            $<$<CXX_COMPILER_ID:Clang>:-fcf-protection=full>
             $<$<CXX_COMPILER_ID:MSVC>:/GS
             /guard:cf>
 )
