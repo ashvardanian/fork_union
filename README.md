@@ -2,14 +2,6 @@
 
 Fork Union is arguably the lowest-latency OpenMP-style NUMA-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#alignment--false-sharing) of CPU cache-lines on the hot path 🍴
 
-[![Ubuntu GCC](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20GCC&job=test_ubuntu_gcc)](https://github.com/ashvardanian/fork_union/actions)
-[![Ubuntu Clang](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Ubuntu%20Clang&job=test_ubuntu_clang)](https://github.com/ashvardanian/fork_union/actions)
-[![macOS](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=macOS&job=test_macos)](https://github.com/ashvardanian/fork_union/actions)
-[![Windows](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Windows&job=test_windows)](https://github.com/ashvardanian/fork_union/actions)
-[![32-bit x86](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=32-bit%20x86&job=test_i386)](https://github.com/ashvardanian/fork_union/actions)
-[![32-bit ARM](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=32-bit%20ARM&job=test_armhf)](https://github.com/ashvardanian/fork_union/actions)
-[![Big-endian IBM](https://img.shields.io/github/actions/workflow/status/ashvardanian/fork_union/prerelease.yml?branch=main-dev&label=Big-endian%20IBM&job=test_s390x)](https://github.com/ashvardanian/fork_union/actions)
-
 ## Motivation
 
 Most "thread-pools" are not, in fact, thread-pools, but rather "task-queues" that are designed to synchronize a concurrent dynamically growing list of heap-allocated globally accessible shared objects.
@@ -21,7 +13,7 @@ OpenMP, however, is not ideal for fine-grained parallelism and is less portable 
 [![`fork_union` banner](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/fork_union.jpg?raw=true)](https://github.com/ashvardanian/fork_union)
 
 This is where __`fork_union`__ comes in.
-It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
+It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#why-not-reimplement-it-in-rust)).
 It supports pinning threads to specific [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access) nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
 
 ## Basic Usage
@@ -70,7 +62,7 @@ fork_union = { git = "https://github.com/ashvardanian/fork_union.git", branch = 
 
 A minimal example may look like this:
 
-```rs
+```rust
 use fork_union as fu;
 let mut pool = fu::spawn(2);
 pool.for_threads(|thread_index, colocation_index| {
@@ -80,7 +72,7 @@ pool.for_threads(|thread_index, colocation_index| {
 
 Higher-level APIs distribute index-addressable tasks across the threads in the pool:
 
-```rs
+```rust
 pool.for_n(100, |prong| {
     println!("Running task {} on thread # {}",
         prong.task_index + 1, prong.thread_index + 1);
@@ -95,10 +87,9 @@ pool.for_n_dynamic(100, |prong| {
 });
 ```
 
-A safer `try_spawn_in` interface is recommended using the Allocator API.
-A more realistic example may look like this:
+A more realistic example with named threads and error handling may look like this:
 
-```rs
+```rust
 use std::error::Error;
 use fork_union as fu;
 
@@ -166,7 +157,7 @@ int main() {
     //
     // You can also think about it as a shortcut for the `for_slices` + `for`.
     pool.for_n(1000, [](std::size_t task_index) noexcept {
-        std::printf("Running task %zu of 3\n", task_index + 1);
+        std::printf("Running task %zu of 1000\n", task_index + 1);
     });
     pool.for_slices(1000, [](std::size_t first_index, std::size_t count) noexcept {
         std::printf("Running slice [%zu, %zu)\n", first_index, first_index + count);
@@ -178,7 +169,7 @@ int main() {
     //      #pragma omp parallel for schedule(dynamic, 1)
     //      for (int i = 0; i < 3; ++i) { ... }
     pool.for_n_dynamic(3, [](std::size_t task_index) noexcept {
-        std::printf("Running dynamic task %zu of 1000\n", task_index + 1);
+        std::printf("Running dynamic task %zu of 3\n", task_index + 1);
     });
     return EXIT_SUCCESS;
 }
@@ -362,16 +353,16 @@ while (!has_work_to_do())
 ```
 
 On Linux, the `std::this_thread::yield()` translates into a `sched_yield` system call, which means context switching to the kernel and back.
-Instead, you can replace the `standard_yield_t` STL wrapper with a platform-specific "yield" instruction, which is much cheaper.
+Instead, you can replace the `standard_yield_t` wrapper with a platform-specific micro-wait instruction, which is much cheaper.
 Those instructions, like [`WFET` on Arm](https://developer.arm.com/documentation/ddi0602/2025-03/Base-Instructions/WFET--Wait-for-event-with-timeout-), generally hint the CPU to transition to a low-power state.
 
-| Wrapper            | ISA          | Instruction | Privileges |
-| ------------------ | ------------ | ----------- | ---------- |
-| `x86_yield_t`      | x86          | `PAUSE`     | R3         |
-| `x86_tpause_1us_t` | x86+WAITPKG  | `TPAUSE`    | R3         |
-| `arm64_yield_t`    | AArch64      | `YIELD`     | EL0        |
-| `arm64_wfet_t`     | AArch64+WFXT | `WFET`      | EL0        |
-| `riscv_yield_t`    | RISC-V       | `PAUSE`     | U          |
+| Wrapper         | ISA          | Instruction | Privileges |
+| --------------- | ------------ | ----------- | ---------- |
+| `x86_pause_t`   | x86          | `PAUSE`     | R3         |
+| `x86_tpause_t`  | x86+WAITPKG  | `TPAUSE`    | R3         |
+| `arm64_yield_t` | AArch64      | `YIELD`     | EL0        |
+| `arm64_wfet_t`  | AArch64+WFXT | `WFET`      | EL0        |
+| `risc5_pause_t` | RISC-V       | `PAUSE`     | U          |
 
 No kernel calls.
 No futexes.
@@ -451,7 +442,7 @@ Now, the Rust library is a wrapper over the C binding of the C++ core implementa
 To run the C++ tests, use CMake:
 
 ```bash
-cmake -B build_release -D CMAKE_BUILD_TYPE=Release
+cmake -B build_release -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTING=ON
 cmake --build build_release --config Release -j
 ctest --test-dir build_release                  # run all tests
 build_release/fork_union_nbody                  # run the benchmarks
@@ -460,7 +451,7 @@ build_release/fork_union_nbody                  # run the benchmarks
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:
 
 ```bash
-cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D BUILD_TESTING=ON
 cmake --build build_debug --config Debug        # build with Debug symbols
 build_debug/fork_union_test_cpp20               # run a single test executable
 ```
@@ -515,3 +506,7 @@ To automatically detect the Minimum Supported Rust Version (MSRV):
 cargo +stable install cargo-msrv
 cargo msrv find --ignore-lockfile
 ```
+
+## License
+
+Licensed under the Apache License, Version 2.0. See `LICENSE` for details.
