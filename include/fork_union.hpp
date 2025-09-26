@@ -291,6 +291,11 @@ enum capabilities_t : unsigned int {
     capability_huge_pages_transparent_k = 1 << 12, // ? ... doing the same "transparently"
 };
 
+inline capabilities_t operator|(capabilities_t a, capabilities_t b)
+{
+  return static_cast<capabilities_t>(static_cast<unsigned int>(a) | static_cast<unsigned int>(b));
+}
+
 struct standard_yield_t {
     inline void operator()() const noexcept { std::this_thread::yield(); }
 };
