@@ -224,7 +224,10 @@ endif ()
 
 # Tests & benchmarking scripts
 include(CTest)
-if (BUILD_TESTING)
+
+option(FORK_UNION_BUILD_TESTS "Build fork_union tests" ON)
+
+if (BUILD_TESTING AND FORK_UNION_BUILD_TESTS)
     enable_testing()
     add_subdirectory(scripts)
 endif ()
