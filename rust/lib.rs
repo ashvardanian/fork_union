@@ -2837,14 +2837,14 @@ mod tests {
     }
 
     #[test]
-    fn test_capabilities() {
+    fn capabilities() {
         let caps = capabilities_string();
         std::println!("Capabilities: {caps:?}");
         assert!(caps.is_some());
     }
 
     #[test]
-    fn test_system_info() {
+    fn system_info() {
         let cores = count_logical_cores();
         let numa = count_numa_nodes();
         let colocations = count_colocations();
@@ -2855,14 +2855,14 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_and_basic_info() {
+    fn spawn_and_basic_info() {
         let pool = spawn(2);
         assert_eq!(pool.threads(), 2);
         assert!(pool.colocations() > 0);
     }
 
     #[test]
-    fn test_for_threads_dispatch() {
+    fn for_threads_dispatch() {
         let count_threads = hw_threads();
         let mut pool = spawn(count_threads);
 
@@ -2887,7 +2887,7 @@ mod tests {
     }
 
     #[test]
-    fn test_for_n_static_scheduling() {
+    fn for_n_static_scheduling() {
         const EXPECTED_PARTS: usize = 1_000;
         let mut pool = spawn(hw_threads());
 
@@ -2917,7 +2917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_for_n_dynamic_scheduling() {
+    fn for_n_dynamic_scheduling() {
         const EXPECTED_PARTS: usize = 1_000;
         let mut pool = spawn(hw_threads());
 
@@ -2947,7 +2947,7 @@ mod tests {
     }
 
     #[test]
-    fn test_for_each_mut() {
+    fn for_each_mut() {
         const ELEMENTS: usize = 1000;
         let mut pool = spawn(hw_threads());
         let mut data = std::vec![0u64; ELEMENTS];
@@ -2962,7 +2962,7 @@ mod tests {
     }
 
     #[test]
-    fn test_closure_objects() {
+    fn closure_objects() {
         let mut pool = spawn(hw_threads());
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_ref = Arc::clone(&counter);
@@ -2979,7 +2979,7 @@ mod tests {
     }
 
     #[test]
-    fn test_explicit_broadcast_join() {
+    fn explicit_broadcast_join() {
         let mut pool = spawn(4);
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_ref = Arc::clone(&counter);
@@ -3001,7 +3001,7 @@ mod tests {
     }
 
     #[test]
-    fn test_join_without_explicit_broadcast() {
+    fn join_without_explicit_broadcast() {
         let mut pool = spawn(4);
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_ref = Arc::clone(&counter);
@@ -3016,7 +3016,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_allocator_creation() {
+    fn pinned_allocator_creation() {
         let numa_count = count_numa_nodes();
         assert!(numa_count > 0, "System should have at least one NUMA node");
 
@@ -3033,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_allocation() {
+    fn basic_allocation() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator
             .allocate(1024)
@@ -3048,7 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allocate_zero_bytes() {
+    fn allocate_zero_bytes() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator.allocate(0);
         assert!(
@@ -3058,7 +3058,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allocate_at_least() {
+    fn allocate_at_least() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let allocation = allocator
             .allocate_at_least(1000)
@@ -3074,7 +3074,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_creation() {
+    fn pinned_vec_creation() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let vec = PinnedVec::<i32>::new_in(allocator);
         assert_eq!(vec.len(), 0);
@@ -3084,7 +3084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_with_capacity() {
+    fn pinned_vec_with_capacity() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let vec = PinnedVec::<i32>::with_capacity_in(allocator, 10).expect("Failed to create vec");
         assert_eq!(vec.len(), 0);
@@ -3094,7 +3094,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_push_pop() {
+    fn pinned_vec_push_pop() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
 
@@ -3117,7 +3117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_indexing() {
+    fn pinned_vec_indexing() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         vec.push(10).expect("Failed to push");
@@ -3135,7 +3135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_clear() {
+    fn pinned_vec_clear() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         vec.push(1).expect("Failed to push");
@@ -3149,7 +3149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_insert_remove() {
+    fn pinned_vec_insert_remove() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         vec.push(1).expect("Failed to push");
@@ -3171,7 +3171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_reserve() {
+    fn pinned_vec_reserve() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         assert_eq!(vec.capacity(), 0);
@@ -3188,7 +3188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_extend_from_slice() {
+    fn pinned_vec_extend_from_slice() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         let data = [1, 2, 3, 4, 5];
@@ -3201,7 +3201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_iterators() {
+    fn pinned_vec_iterators() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         for i in 0..5 {
@@ -3225,7 +3225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_slices() {
+    fn pinned_vec_slices() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
         for i in 0..5 {
@@ -3244,7 +3244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_growth() {
+    fn pinned_vec_growth() {
         let allocator = PinnedAllocator::new(0).expect("Failed to create alloc");
         let mut vec = PinnedVec::<i32>::new_in(allocator);
 
@@ -3260,14 +3260,14 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_invalid_numa_node() {
+    fn pinned_vec_invalid_numa_node() {
         let numa_count = count_numa_nodes();
         let allocator = PinnedAllocator::new(numa_count + 1);
         assert!(allocator.is_none());
     }
 
     #[test]
-    fn test_sync_const_ptr() {
+    fn sync_const_ptr() {
         let data = Vec::from([1, 2, 3, 4, 5]);
         let sync_ptr = SyncConstPtr::new(data.as_ptr());
 
@@ -3281,7 +3281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_const_ptr_send_sync() {
+    fn sync_const_ptr_send_sync() {
         fn assert_send<T: Send>() {}
         fn assert_sync<T: Sync>() {}
 
@@ -3290,7 +3290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_vec_send_sync() {
+    fn pinned_vec_send_sync() {
         fn assert_send<T: Send>() {}
         fn assert_sync<T: Sync>() {}
 
@@ -3299,7 +3299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_indexed_split() {
+    fn indexed_split() {
         // Test basic split
         let split = IndexedSplit::new(10, 3);
         assert_eq!(split.get(0), 0..4); // `ceil(10/3)` = 4
@@ -3324,7 +3324,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Threads count must be greater than zero")]
-    fn test_indexed_split_zero_threads() {
+    fn indexed_split_zero_threads() {
         IndexedSplit::new(10, 0);
     }
 }

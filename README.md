@@ -1,18 +1,20 @@
 # Fork Union 🍴
 
-"Fork Union" is the low(est?)-latency [OpenMP](https://en.wikipedia.org/wiki/OpenMP)-style [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access)-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#) of CPU cache-lines on the hot path 🍴
+Fork Union is arguably the lowest-latency OpenMP-style NUMA-aware minimalistic scoped thread-pool designed for 'Fork-Join' parallelism in C++, C, and Rust, avoiding × [mutexes & system calls](#locks-and-mutexes), × [dynamic memory allocations](#memory-allocations), × [CAS-primitives](#atomics-and-cas), and × [false-sharing](#alignment--false-sharing) of CPU cache-lines on the hot path 🍴
 
-![`fork_union` banner](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/fork_union.jpg?raw=true)
+## Motivation
 
 Most "thread-pools" are not, in fact, thread-pools, but rather "task-queues" that are designed to synchronize a concurrent dynamically growing list of heap-allocated globally accessible shared objects.
 In C++ terms, think of it as a `std::queue<std::function<void()>>` protected by a `std::mutex`, where each thread waits for the next task to be available and then executes it on some random core chosen by the OS scheduler.
 All of that is slow... and true across C++, C, and Rust projects.
-Short of OpenMP, practically every other solution has high dispatch latency and noticeable memory overhead.
+Short of [OpenMP](https://en.wikipedia.org/wiki/OpenMP), practically every other solution has high dispatch latency and noticeable memory overhead.
 OpenMP, however, is not ideal for fine-grained parallelism and is less portable than the C++ and Rust standard libraries.
 
+[![`fork_union` banner](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/fork_union.jpg?raw=true)](https://github.com/ashvardanian/fork_union)
+
 This is where __`fork_union`__ comes in.
-It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone](#reimplementing-in-rust)).
-It supports pinning threads to specific NUMA nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
+It's a C++ 17 library with C 99 and Rust bindings ([previously Rust implementation was standalone in v1](#why-not-reimplement-it-in-rust)).
+It supports pinning threads to specific [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access) nodes or individual CPU cores, making it much easier to ensure data locality and halving the latency of individual loads in Big Data applications.
 
 ## Basic Usage
 
@@ -43,9 +45,24 @@ Most interestingly, for Big Data applications, a higher-level `distributed_pool`
 
 ### Intro in Rust
 
+To integrate into your Rust project, add the following lines to Cargo.toml:
+
+```toml
+[dependencies]
+fork_union = "2.2.9"                                    # default
+fork_union = { version = "2.2.9", features = ["numa"] } # with NUMA support on Linux
+```
+
+Or for the preview development version:
+
+```toml
+[dependencies]
+fork_union = { git = "https://github.com/ashvardanian/fork_union.git", branch = "main-dev" }
+```
+
 A minimal example may look like this:
 
-```rs
+```rust
 use fork_union as fu;
 let mut pool = fu::spawn(2);
 pool.for_threads(|thread_index, colocation_index| {
@@ -55,7 +72,7 @@ pool.for_threads(|thread_index, colocation_index| {
 
 Higher-level APIs distribute index-addressable tasks across the threads in the pool:
 
-```rs
+```rust
 pool.for_n(100, |prong| {
     println!("Running task {} on thread # {}",
         prong.task_index + 1, prong.thread_index + 1);
@@ -70,10 +87,9 @@ pool.for_n_dynamic(100, |prong| {
 });
 ```
 
-A safer `try_spawn_in` interface is recommended using the Allocator API.
-A more realistic example may look like this:
+A more realistic example with named threads and error handling may look like this:
 
-```rs
+```rust
 use std::error::Error;
 use fork_union as fu;
 
@@ -88,6 +104,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 ```
+
+For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
 
 ### Intro in C++
 
@@ -104,7 +122,7 @@ Alternatively, using CMake:
 FetchContent_Declare(
     fork_union
     GIT_REPOSITORY https://github.com/ashvardanian/fork_union
-    GIT_TAG v2.2.5
+    GIT_TAG v2.2.9
 )
 FetchContent_MakeAvailable(fork_union)
 target_link_libraries(your_target PRIVATE fork_union::fork_union)
@@ -139,7 +157,7 @@ int main() {
     //
     // You can also think about it as a shortcut for the `for_slices` + `for`.
     pool.for_n(1000, [](std::size_t task_index) noexcept {
-        std::printf("Running task %zu of 3\n", task_index + 1);
+        std::printf("Running task %zu of 1000\n", task_index + 1);
     });
     pool.for_slices(1000, [](std::size_t first_index, std::size_t count) noexcept {
         std::printf("Running slice [%zu, %zu)\n", first_index, first_index + count);
@@ -151,14 +169,14 @@ int main() {
     //      #pragma omp parallel for schedule(dynamic, 1)
     //      for (int i = 0; i < 3; ++i) { ... }
     pool.for_n_dynamic(3, [](std::size_t task_index) noexcept {
-        std::printf("Running dynamic task %zu of 1000\n", task_index + 1);
+        std::printf("Running dynamic task %zu of 3\n", task_index + 1);
     });
     return EXIT_SUCCESS;
 }
 ```
 
-That's it.
 For advanced usage, refer to the [NUMA section below](#non-uniform-memory-access-numa).
+NUMA detection on Linux defaults to AUTO. Override with `-D FORK_UNION_ENABLE_NUMA=ON` or `OFF`.
 
 ## Alternatives & Differences
 
@@ -335,16 +353,16 @@ while (!has_work_to_do())
 ```
 
 On Linux, the `std::this_thread::yield()` translates into a `sched_yield` system call, which means context switching to the kernel and back.
-Instead, you can replace the `standard_yield_t` STL wrapper with a platform-specific "yield" instruction, which is much cheaper.
+Instead, you can replace the `standard_yield_t` wrapper with a platform-specific micro-wait instruction, which is much cheaper.
 Those instructions, like [`WFET` on Arm](https://developer.arm.com/documentation/ddi0602/2025-03/Base-Instructions/WFET--Wait-for-event-with-timeout-), generally hint the CPU to transition to a low-power state.
 
-| Wrapper            | ISA          | Instruction | Privileges |
-| ------------------ | ------------ | ----------- | ---------- |
-| `x86_yield_t`      | x86          | `PAUSE`     | R3         |
-| `x86_tpause_1us_t` | x86+WAITPKG  | `TPAUSE`    | R3         |
-| `arm64_yield_t`    | AArch64      | `YIELD`     | EL0        |
-| `arm64_wfet_t`     | AArch64+WFXT | `WFET`      | EL0        |
-| `riscv_yield_t`    | RISC-V       | `PAUSE`     | U          |
+| Wrapper         | ISA          | Instruction | Privileges |
+| --------------- | ------------ | ----------- | ---------- |
+| `x86_pause_t`   | x86          | `PAUSE`     | R3         |
+| `x86_tpause_t`  | x86+WAITPKG  | `TPAUSE`    | R3         |
+| `arm64_yield_t` | AArch64      | `YIELD`     | EL0        |
+| `arm64_wfet_t`  | AArch64+WFXT | `WFET`      | EL0        |
+| `risc5_pause_t` | RISC-V       | `PAUSE`     | U          |
 
 No kernel calls.
 No futexes.
@@ -399,22 +417,26 @@ Let's call every invocation of a `for_*` API - a "fork", and every exit from it 
 | `threads_to_sync`  | Threads not joined this fork | Tells main thread when workers finish |
 | `dynamic_progress` | Progress within this fork    | Tells workers which jobs to take      |
 
-__Why don't we need atomics for "total_threads"?__
+### Why don't we need atomics for "total_threads"?
+
 The only way to change the number of threads is to `terminate` the entire thread-pool and then `try_spawn` it again.
 Either of those operations can only be called from one thread at a time and never coincide with any running tasks.
 That's ensured by the `stop`.
 
-__Why don't we need atomics for a "job pointer"?__
+### Why don't we need atomics for a "job pointer"?
+
 A new task can only be submitted from one thread that updates the number of parts for each new fork.
 During that update, the workers are asleep, spinning on old values of `fork_generation` and `stop`.
 They only wake up and access the new value once `fork_generation` increments, ensuring safety.
 
-__How do we deal with overflows and `SIZE_MAX`-sized tasks?__
+### How do we deal with overflows and `SIZE_MAX`-sized tasks?
+
 The library entirely avoids saturating multiplication and only uses one saturating addition in "release" builds.
 To test the consistency of arithmetic, the C++ template class can be instantiated with a custom `index_t`, such as `std::uint8_t` or `std::uint16_t`.
 In the former case, no more than 255 threads can operate, and no more than 255 tasks can be addressed, allowing us to easily test every weird corner case of [0:255] threads competing for [0:255] tasks.
 
-__Why not reimplement it in Rust?__
+### Why not reimplement it in Rust?
+
 The original Rust implementation was a standalone library, but in essence, Rust doesn't feel designed for parallelism, concurrency, and expert Systems Engineering.
 It enforces stringent safety rules, which is excellent for building trustworthy software, but realistically, it makes lock-free concurrent programming with minimal memory allocations too complicated.
 Now, the Rust library is a wrapper over the C binding of the C++ core implementation.
@@ -424,7 +446,7 @@ Now, the Rust library is a wrapper over the C binding of the C++ core implementa
 To run the C++ tests, use CMake:
 
 ```bash
-cmake -B build_release -D CMAKE_BUILD_TYPE=Release
+cmake -B build_release -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTING=ON
 cmake --build build_release --config Release -j
 ctest --test-dir build_release                  # run all tests
 build_release/fork_union_nbody                  # run the benchmarks
@@ -433,7 +455,7 @@ build_release/fork_union_nbody                  # run the benchmarks
 For C++ debug builds, consider using the VS Code debugger presets or the following commands:
 
 ```bash
-cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D BUILD_TESTING=ON
 cmake --build build_debug --config Debug        # build with Debug symbols
 build_debug/fork_union_test_cpp20               # run a single test executable
 ```
@@ -463,10 +485,32 @@ cmake --build build_debug --config Debug
 build_debug/fork_union_test_cpp20
 ```
 
+Or on macOS with Apple Clang:
+
+```bash
+brew install llvm@20
+cmake -B build_debug -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=$(brew --prefix llvm@20)/bin/clang++
+cmake --build build_debug --config Debug
+build_debug/fork_union_test_cpp20
+```
+
 For Rust, use the following command:
 
 ```bash
-rustup toolchain install # for Alloc API
-cargo miri test          # to catch UBs
-cargo test --release     # to run the tests fast
+rustup toolchain install                # for Alloc API
+cargo miri test                         # to catch UBs
+cargo build --features numa             # for NUMA support on Linux
+cargo test --release                    # to run the tests fast
+cargo test --features numa --release    # for NUMA tests on Linux
 ```
+
+To automatically detect the Minimum Supported Rust Version (MSRV):
+
+```sh
+cargo +stable install cargo-msrv
+cargo msrv find --ignore-lockfile
+```
+
+## License
+
+Licensed under the Apache License, Version 2.0. See `LICENSE` for details.

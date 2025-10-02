@@ -80,15 +80,26 @@
 
 #define FORK_UNION_VERSION_MAJOR 2
 #define FORK_UNION_VERSION_MINOR 2
-#define FORK_UNION_VERSION_PATCH 5
+#define FORK_UNION_VERSION_PATCH 9
 
 #if !defined(FU_ALLOW_UNSAFE)
 #define FU_ALLOW_UNSAFE 0
 #endif
 
+/**
+ *  We auto-enable NUMA in Linux builds with GLibC 2.30+ due to `gettid` support.
+ *  @see https://man7.org/linux/man-pages/man2/gettid.2.html
+ */
 #if !defined(FU_ENABLE_NUMA)
-#if defined(__linux__) && defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
+#if defined(__linux__)
+#if __has_include(<features.h>)
+#include <features.h> // `__GLIBC__`, `__GLIBC_PREREQ`
+#endif
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 30)
 #define FU_ENABLE_NUMA 1
+#else
+#define FU_ENABLE_NUMA 0
+#endif
 #else
 #define FU_ENABLE_NUMA 0
 #endif
@@ -434,10 +445,24 @@ struct allocation_result {
 
     size_type bytes_per_page() const noexcept { return bytes / pages; }
 
+    /**
+     *  The standard says, that `std::allocation_result` must have 2 template arguments:
+     *  pointer type and size type. Clang until version 19 disagrees and results in a
+     *  compilation error, so we use some ugly SFINAE to detect which form is available.
+     *
+     *  `_LIBCPP_VERSION` is encoded  as (MAJOR * 10000 + MINOR * 100 + PATCH).
+     *  @see https://github.com/llvm/llvm-project/blob/main/libcxx/include/__config
+     */
 #if defined(__cpp_lib_allocate_at_least)
+#if defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 190000
+    operator std::allocation_result<pointer_type>() const noexcept {
+        return std::allocation_result<pointer_type> {ptr, static_cast<std::size_t>(count)};
+    }
+#else
     operator std::allocation_result<pointer_type, size_type>() const noexcept {
         return std::allocation_result<pointer_type, size_type>(ptr, count);
     }
+#endif
 #endif
 };
 
@@ -2104,7 +2129,7 @@ struct numa_topology {
         numa_mask = ::numa_allocate_cpumask();
         if (!numa_mask) goto failed_harvest; // ! Allocation failed
 
-        // First pass – measure
+        // First pass - measure
         max_numa_node_id = ::numa_max_node();
         for (numa_node_id_t node_id = 0; node_id <= max_numa_node_id; ++node_id) {
             long long dummy;
@@ -2118,7 +2143,7 @@ struct numa_topology {
         }
         if (fetched_nodes == 0) goto failed_harvest; // ! Zero nodes is not a valid state
 
-        // Second pass – allocate
+        // Second pass - allocate
         nodes_ptr = nodes_alloc.allocate(fetched_nodes);
         core_ids_ptr = cores_alloc.allocate(fetched_cores);
         if (!nodes_ptr || !core_ids_ptr) goto failed_harvest; // ! Allocation failed
@@ -2176,7 +2201,7 @@ struct numa_topology {
      *  @brief Copy-assigns the topology from @p other.
      *
      *  Instead of a copy-constructor we expose an explicit operation that can
-     *  FAIL – returning `false` if *any* intermediate allocation fails.
+     *  FAIL - returning `false` if *any* intermediate allocation fails.
      *
      *  @param other Source topology.
      *  @retval true  Success, the current instance now owns a deep copy.
@@ -2268,12 +2293,14 @@ FU_MAYBE_UNUSED_ static inline bool linux_numa_bind(void *ptr, std::size_t size_
 FU_MAYBE_UNUSED_ static inline void *linux_numa_allocate(std::size_t size_bytes, std::size_t page_size_bytes,
                                                          numa_node_id_t node_id) noexcept {
     assert(node_id >= 0 && "NUMA node ID must be non-negative");
-    assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
 
 #if FU_ENABLE_NUMA
 
-    // In simple cases, just redirect to `numa_alloc_onnode`
+    // Fast path: regular pages – let `libnuma` handle any rounding internally.
     if (page_size_bytes == static_cast<std::size_t>(::numa_pagesize())) return ::numa_alloc_onnode(size_bytes, node_id);
+
+    // Huge/explicit page sizes must be exact multiples
+    assert(size_bytes % page_size_bytes == 0 && "Size must be a multiple of page size");
 
     // Make sure the page size makes sense for Linux
     int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -2359,7 +2386,8 @@ struct linux_numa_allocator {
         if (aligned_size_bytes % sizeof(value_type)) return {}; // ! Not a size multiple
         auto result_ptr = allocate(aligned_size_bytes / sizeof(value_type), page_size_bytes);
         if (!result_ptr) return {}; // ! Allocation failed
-        return {result_ptr, size, aligned_size_bytes, page_size_bytes};
+        size_type const pages_count = (page_size_bytes == 0) ? 0 : (aligned_size_bytes / page_size_bytes);
+        return {result_ptr, size, aligned_size_bytes, pages_count};
     }
 
     /**
@@ -2541,9 +2569,10 @@ struct linux_colocated_pool {
     linux_colocated_pool &operator=(linux_colocated_pool const &) = delete;
 
     explicit linux_colocated_pool(char const *name = "fork_union") noexcept {
-        assert(name && "Thread name must not be null");
-        if (std::strlen(name_) == 0) { std::strncpy(name_, "fork_union", sizeof(name_) - 1); } // ? Default name
-        else { std::strncpy(name_, name, sizeof(name_) - 1), name_[sizeof(name_) - 1] = '\0'; }
+        // Accept NULL or empty names by falling back to a sensible default
+        char const *effective_name = (name && name[0] != '\0') ? name : "fork_union";
+        std::strncpy(name_, effective_name, sizeof(name_) - 1);
+        name_[sizeof(name_) - 1] = '\0';
     }
 
     ~linux_colocated_pool() noexcept { terminate(); }
@@ -3321,9 +3350,10 @@ struct linux_distributed_pool {
         : linux_distributed_pool("fork_union", std::move(topo)) {}
 
     explicit linux_distributed_pool(char const *name, numa_topology_t topo = {}) noexcept : topology_(std::move(topo)) {
-        assert(name && "Thread name must not be null");
-        if (std::strlen(name_) == 0) { std::strncpy(name_, "fork_union", sizeof(name_) - 1); } // ? Default name
-        else { std::strncpy(name_, name, sizeof(name_) - 1), name_[sizeof(name_) - 1] = '\0'; }
+        // Accept null or empty names by falling back to a sensible default
+        char const *effective_name = (name && name[0] != '\0') ? name : "fork_union";
+        std::strncpy(name_, effective_name, sizeof(name_) - 1);
+        name_[sizeof(name_) - 1] = '\0';
     }
 
     ~linux_distributed_pool() noexcept { terminate(); }
@@ -3771,7 +3801,7 @@ struct log_memory_volume_t {
 };
 
 /**
- *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0–3,5,7,8,10–12".
+ *  @brief Formats a set of CPU core IDs in a compact and readable way, like @b "0-3,5,7,8,10-12".
  */
 struct log_core_range_t {
 
@@ -3799,7 +3829,7 @@ struct log_core_range_t {
 
         if (is_contiguous) {
             std::snprintf(                            //
-                buffer, buffer_size, "%s%d%s–%s%d%s", //
+                buffer, buffer_size, "%s%d%s-%s%d%s", //
                 value_color, core_ids[0], reset_color, value_color, core_ids[count - 1], reset_color);
         }
         else {

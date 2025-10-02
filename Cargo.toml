@@ -1,11 +1,27 @@
 [package]
 name = "fork_union"
 description = "Low-latency OpenMP-style NUMA-aware cross-platform fine-grained parallelism library"
-version = "2.2.5"
+version = "2.2.9"
 edition = "2021"
 authors = ["Ash Vardanian"]
 license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/fork_union"
+rust-version = "1.64" # Introduced Core C FFI in stable Rust
+readme = "README.md"
+documentation = "https://docs.rs/fork_union"
+homepage = "https://github.com/ashvardanian/fork_union"
+keywords = ["numa", "parallel", "thread-pool", "allocator", "no-std"]
+categories = ["concurrency", "os::linux-apis", "external-ffi-bindings"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "build.rs",
+    "rust/**",
+    "include/**",
+    "c/**",
+]
+links = "fork_union"
 
 [lib]
 name = "fork_union"
@@ -17,9 +33,10 @@ cc = "1.2.29"
 [features]
 default = ["std"]
 std = []
+numa = []
 
 [profile.release]
-opt-level = 3     # Corresponds to -O3
+opt-level = 2     # Corresponds to -O2
 lto = true        # Enables Link Time Optimization for further optimizations
 codegen-units = 1 # May increase compilation time but optimizes further
 rpath = false     # On some systems, setting this to false can help with optimizations

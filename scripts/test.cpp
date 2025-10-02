@@ -12,10 +12,15 @@ using fu32_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t,
 using fu16_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
 using fu8_t = fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
 
+/*
+ *  Explicitly instantiate the thread-pools to cover all of their logic, but avoid the
+ *  "duplicate explicit instantiation" error on platforms where `std::size_t` is `uint64_t`.
+ *
+ *  template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::size_t>
+ */
 template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint32_t>;
 template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint16_t>;
 template class fu::basic_pool<std::allocator<std::thread>, fu::standard_yield_t, std::uint8_t>;
-template class fu::basic_pool<>;
 
 #if FU_ENABLE_NUMA
 template struct fu::linux_colocated_pool<>;

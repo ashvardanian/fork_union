@@ -11,7 +11,7 @@ function (set_target_properties_for_fork_union_script target_name)
     # In release mode, enable optimizations
     if (CMAKE_BUILD_TYPE STREQUAL "Release")
         message(STATUS "Enabling optimizations for ${target_name}")
-        target_compile_options(${target_name} PRIVATE -O3)
+        target_compile_options(${target_name} PRIVATE -O2)
     endif ()
 
     # if we're not in Release mode
@@ -36,7 +36,7 @@ endfunction ()
 
 # Test targets for C++17 & C++20
 set(TEST_SOURCES test.cpp)
-set(CXX_STANDARDS 17 20)
+set(CXX_STANDARDS 17 20 23)
 foreach (STD IN LISTS CXX_STANDARDS)
     # Derive a unique target name
     set(TGT fork_union_test_cpp${STD})
@@ -55,10 +55,9 @@ foreach (STD IN LISTS CXX_STANDARDS)
     add_test(NAME ${TGT} COMMAND ${TGT})
     set_target_properties_for_fork_union_script(${TGT})
 
-    # Link against `libatomic` for older GCC versions that might need it
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
-        # AppleClang doesn't need `libatomic` as atomic operations are built-in
-        if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    # Link against `libatomic` for Linux toolchains that might need it
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        if (UNIX AND NOT APPLE)
             target_link_libraries(${TGT} PRIVATE -latomic)
         endif ()
     endif ()
