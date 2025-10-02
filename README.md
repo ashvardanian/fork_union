@@ -146,7 +146,7 @@ int main() {
 
     // Dispatch a callback to each thread in the pool
     pool.for_threads([&](std::size_t thread_index) noexcept {
-        std::printf("Hello from thread # %zu (of %zu)\n", thread_index + 1, pool.count_threads());
+        std::printf("Hello from thread # %zu (of %zu)\n", thread_index + 1, pool.threads_count());
     });
 
     // Execute 1000 tasks in parallel, expecting them to have comparable runtimes
@@ -299,49 +299,50 @@ inline search_result_t pick_best(search_result_t const& a, search_result_t const
 
 /// Uses all CPU threads to search for the closest vector to the @p query.
 search_result_t search(std::span<float, dimensions> query) {
-    
-    bool const need_to_spawn_threads = !distributed_pool.count_threads();
+
+    bool const need_to_spawn_threads = distributed_pool.threads_count() == 0;
     if (need_to_spawn_threads) {
         assert(numa_topology.try_harvest() && "Failed to harvest NUMA topology");
-        assert(numa_topology.count_nodes() == 2 && "Expected exactly 2 NUMA nodes");
+        assert(numa_topology.nodes_count() == 2 && "Expected exactly 2 NUMA nodes");
         assert(distributed_pool.try_spawn(numa_topology, sizeof(search_result_t)) && "Failed to spawn NUMA pools");
     }
-    
+
     search_result_t result;
     fu::spin_mutex_t result_update; // ? Lighter `std::mutex` alternative w/out system calls
-    
-    auto concurrent_searcher = [&](auto first_prong, std::size_t count) noexcept {
-        auto [first_index, _, colocation] = first_prong;
-        auto& vectors = colocation == 0 ? first_half : second_half;
+
+    std::size_t const total_vectors =
+        (first_half.size() + second_half.size()) / dimensions;
+
+    auto slices = distributed_pool.for_slices(total_vectors,
+        [&](fu::colocated_prong<> first, std::size_t count) noexcept {
+
+        bool const in_second = first.colocation != 0;
+        auto const &shard = in_second ? second_half : first_half;
+        std::size_t const shard_base = in_second ? first_half.size() / dimensions : 0;
+        std::size_t const local_begin = first.task - shard_base;
+
         search_result_t thread_local_result;
-        for (std::size_t task_index = first_index; task_index < first_index + count; ++task_index) {
+        for (std::size_t i = 0; i < count; ++i) {
+            std::size_t const local_index = local_begin + i;
+            std::size_t const global_index = shard_base + local_index;
+
             simsimd_distance_t distance;
-            simsimd_f32_cos(query.data(), vectors.data() + task_index * dimensions, dimensions, &distance);
-            thread_local_result = pick_best(thread_local_result, {distance, task_index});
+            simsimd_f32_cos(query.data(), shard.data() + local_index * dimensions, dimensions, &distance);
+            thread_local_result = pick_best(thread_local_result, {distance, global_index});
         }
-        
-        // ! We are spinning on a remote cache line... for simplicity.
+
+        // ! Still synchronizing over a shared mutex for brevity.
         std::lock_guard<fu::spin_mutex_t> lock(result_update);
         result = pick_best(result, thread_local_result);
-    };
-
-    auto _ = distributed_pool[0].for_slices(first_half.size() / dimensions, concurrent_searcher);
-    auto _ = distributed_pool[1].for_slices(second_half.size() / dimensions, concurrent_searcher);
+    });
+    slices.join();
     return result;
 }
 ```
 
 In a dream world, we would call `distributed_pool.for_n`, but there is no clean way to make the scheduling processes aware of the data distribution in an arbitrary application, so that's left to the user.
-Calling `linux_colocated_pool::for_slices` on individual NUMA-node-specific colocated pools is the cheapest general-purpose recipe for Big Data applications.
+The `for_slices` helper provides colocated metadata (`fu::colocated_prong`) that lets you pick the right shard of data based on the NUMA node, while keeping scheduling inside the distributed pool.
 For more flexibility around building higher-level low-latency systems, there are unsafe APIs expecting you to manually "join" the broadcasted calls, like `unsafe_for_threads` and `unsafe_join`.
-Instead of hard-coding the `distributed_pool[0]` and `distributed_pool[1]`, we can iterate through them without keeping the lifetime-preserving handle to the passed `concurrent_searcher`:
-
-```cpp
-for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
-    distributed_pool[colocation].unsafe_for_threads(..., concurrent_searcher);
-for (std::size_t colocation = 0; colocation < distributed_pool.colocations_count(); ++colocation)
-    distributed_pool[colocation].unsafe_join();
-```
 
 ### Efficient Busy Waiting
 
